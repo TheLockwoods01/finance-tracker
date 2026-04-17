@@ -25,9 +25,8 @@
 </head>
 <body>
   <div id="root"></div>
-
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
 
     /* ══════════════════════════════════════════════
        DESIGN TOKENS
@@ -38,16 +37,16 @@
       green: '#00D09C', greenBg: 'rgba(0,208,156,0.11)',
       red: '#FF4560',
       amber: '#FFB020', amberBg: 'rgba(255,176,32,0.11)',
-      blue: '#4E9EFF', blueBg: 'rgba(78,158,255,0.11)',
+      blue: '#4E9EFF',
       lavender: '#8B9ECC',
       text: '#EDF0FA', muted: '#68718F', dim: '#252A40',
     };
 
     /* ══════════════════════════════════════════════
-       STORAGE — localStorage, persists across sessions
+       STORAGE
     ══════════════════════════════════════════════ */
     const SK = k => 'ftv3_' + k;
-    const persist = (k, v) => { try { localStorage.setItem(SK(k), JSON.stringify(v)); } catch(e) { console.warn('storage:', e); } };
+    const persist = (k, v) => { try { localStorage.setItem(SK(k), JSON.stringify(v)); } catch(e) {} };
     const hydrate = k => { try { const r = localStorage.getItem(SK(k)); return r ? JSON.parse(r) : null; } catch { return null; } };
 
     /* ══════════════════════════════════════════════
@@ -91,24 +90,16 @@
           continue;
         }
         if (c.freq === 'bimonthly') {
-          let ch = c.nextDue;
-          const wkEnd = addD(wk, 6);
-          while (ch > wkEnd) { const d = toD(ch); ch = new Date(d.getFullYear(), d.getMonth() - 2, d.getDate()).toISOString().slice(0, 10); }
-          while (ch <= wkEnd) {
-            if (inWk(ch, wk)) { r.push(c); break; }
-            const d = toD(ch); ch = new Date(d.getFullYear(), d.getMonth() + 2, d.getDate()).toISOString().slice(0, 10);
-          }
+          let ch = c.nextDue; const wkEnd = addD(wk, 6);
+          while (ch > wkEnd) { const d = toD(ch); ch = new Date(d.getFullYear(), d.getMonth()-2, d.getDate()).toISOString().slice(0,10); }
+          while (ch <= wkEnd) { if (inWk(ch, wk)) { r.push(c); break; } const d = toD(ch); ch = new Date(d.getFullYear(), d.getMonth()+2, d.getDate()).toISOString().slice(0,10); }
           continue;
         }
         if (c.freq === 'custom') {
           const days = Math.max(1, +(c.freqDays || 30));
-          let ch = c.nextDue;
-          const wkEnd = addD(wk, 6);
+          let ch = c.nextDue; const wkEnd = addD(wk, 6);
           while (ch > wkEnd) ch = addD(ch, -days);
-          while (ch <= wkEnd) {
-            if (inWk(ch, wk)) { r.push(c); break; }
-            ch = addD(ch, days);
-          }
+          while (ch <= wkEnd) { if (inWk(ch, wk)) { r.push(c); break; } ch = addD(ch, days); }
           continue;
         }
         if (c.freq === 'oneoff' && inWk(c.nextDue, wk)) r.push(c);
@@ -118,39 +109,32 @@
 
     /* ══════════════════════════════════════════════
        CALCULATIONS
+       Week record: { income, holiday } only.
+       All spending comes from txs.
+       Bills come from commitments register.
     ══════════════════════════════════════════════ */
     const START = '2026-02-16';
-    const DEF = { income: 1900, expB: 380, adHocB: 80 };
+    const DEF_SETTINGS = { income: 1900, expB: 380, adHocB: 80, endA: '2026-07-24', endB: '2026-12-14', payLag: 1 };
 
     const wkStats = (wk, wd, comms, allTxs) => {
-      const d = wd || {};
       const txs = allTxs.filter(t => t.wk === wk);
       const sum = type => txs.filter(t => t.type === type).reduce((s, t) => s + +t.amount, 0);
-      const income = +(d.income ?? 0);
-      const expB = +(d.expB ?? DEF.expB);
-      const adHocB = +(d.adHocB ?? 0);
-      const expS = d.manual ? +(d.expS ?? 0) : sum('exp');
-      const adHoc = d.manual ? +(d.adHoc ?? 0) : sum('adhoc');
-      const oneOff = d.manual ? +(d.oneOff ?? 0) : sum('oneoff');
-      const billsTx = sum('bill');
+      const income = +(wd?.income ?? 0);
       const commsWk = commsForWk(wk, comms);
-      const billsAuto = commsWk.reduce((s, c) => s + +c.amount, 0);
-      const bills = d.manual ? +(d.bills ?? 0) : (billsTx > 0 ? billsTx : billsAuto);
+      const bills = commsWk.reduce((s, c) => s + +c.amount, 0);
+      const adHoc = sum('adhoc');
+      const oneOff = sum('oneoff');
+      const expS = sum('exp');
       const real = bills + adHoc + oneOff;
-      return {
-        income, expB, expS, adHocB, adHoc, oneOff, bills, real,
-        saved: income - real,
-        expRet: Math.max(0, expB - expS),
-        holiday: !!d.holiday, txs, commsWk,
-      };
+      return { income, bills, adHoc, oneOff, expS, real, saved: income - real, holiday: !!wd?.holiday, txs, commsWk };
     };
 
     const getAvgs = (weeks, txs, comms) => {
-      const ks = Object.keys(weeks).filter(k => !weeks[k].holiday && (+(weeks[k].income ?? 0) > 0 || weeks[k].manual));
-      if (!ks.length) return { adHoc: DEF.adHocB, bills: 200, saved: 1400, n: 0 };
+      const ks = Object.keys(weeks).filter(k => !weeks[k].holiday && +(weeks[k].income ?? 0) > 0);
+      if (!ks.length) return { adHoc: 80, bills: 200, saved: 1400, n: 0 };
       let [tA, tB, tS] = [0, 0, 0];
       for (const k of ks) { const s = wkStats(k, weeks[k], comms, txs); tA += s.adHoc; tB += s.bills; tS += s.saved; }
-      return { adHoc: tA / ks.length, bills: tB / ks.length, saved: tS / ks.length, n: ks.length };
+      return { adHoc: tA/ks.length, bills: tB/ks.length, saved: tS/ks.length, n: ks.length };
     };
 
     const calcForecast = (endStr, settings, weeks, comms, txs) => {
@@ -161,80 +145,72 @@
         const wd = weeks[wk];
         if (wk <= now) return wd ? total + wkStats(wk, wd, comms, txs).saved : total;
         if (wd?.holiday) return total;
-        const income = +(settings.income ?? DEF.income);
-        const bills = commsForWk(wk, comms).reduce((s, c) => s + +c.amount, 0) || avgs.bills;
+        const income = +(settings.income ?? 1900);
+        const bills = commsForWk(wk, comms).reduce((s,c) => s + +c.amount, 0) || avgs.bills;
         return total + income - bills - avgs.adHoc;
       }, 0);
     };
 
     const totalSaved = (weeks, comms, txs) => {
       const now = getMon();
-      return Object.keys(weeks).filter(k => k <= now).reduce((s, k) => s + wkStats(k, weeks[k], comms, txs).saved, 0);
+      return Object.keys(weeks).filter(k => k <= now).reduce((s,k) => s + wkStats(k, weeks[k], comms, txs).saved, 0);
     };
 
     /* ══════════════════════════════════════════════
        SHARED UI
     ══════════════════════════════════════════════ */
     const Card = ({ children, style }) => (
-      <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 20, padding: 18, ...style }}>
-        {children}
-      </div>
+      <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 20, padding: 18, ...style }}>{children}</div>
     );
     const Lbl = ({ children, style }) => (
-      <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: C.muted, marginBottom: 8, ...style }}>
-        {children}
-      </div>
+      <div style={{ fontFamily:'Outfit,sans-serif', fontSize:11, fontWeight:700, letterSpacing:1.4, textTransform:'uppercase', color:C.muted, marginBottom:8, ...style }}>{children}</div>
     );
-    const Tag = ({ children, color = C.pink }) => (
-      <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, fontWeight: 700, color, background: color + '22', borderRadius: 100, padding: '3px 9px' }}>{children}</span>
+    const Tag = ({ children, color=C.pink }) => (
+      <span style={{ fontFamily:'Outfit,sans-serif', fontSize:11, fontWeight:700, color, background:color+'22', borderRadius:100, padding:'3px 9px' }}>{children}</span>
     );
-    const PBtn = ({ children, onClick, disabled, color = C.pink, style }) => (
-      <button onClick={onClick} disabled={disabled} style={{ width: '100%', background: disabled ? C.s2 : color, color: disabled ? C.muted : '#fff', fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 15, borderRadius: 14, padding: '15px', border: disabled ? `1px solid ${C.border}` : 'none', cursor: disabled ? 'not-allowed' : 'pointer', ...style }}>
+    const PBtn = ({ children, onClick, disabled, color=C.pink, style }) => (
+      <button onClick={onClick} disabled={disabled} style={{ width:'100%', background:disabled?C.s2:color, color:disabled?C.muted:'#fff', fontFamily:'Outfit,sans-serif', fontWeight:700, fontSize:15, borderRadius:14, padding:'15px', border:disabled?`1px solid ${C.border}`:'none', cursor:disabled?'not-allowed':'pointer', ...style }}>
         {children}
       </button>
     );
     const GBtn = ({ children, onClick, style }) => (
-      <button onClick={onClick} style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, fontWeight: 600, color: C.muted, background: C.s2, border: `1px solid ${C.border}`, borderRadius: 10, padding: '8px 14px', cursor: 'pointer', whiteSpace: 'nowrap', ...style }}>
+      <button onClick={onClick} style={{ fontFamily:'Outfit,sans-serif', fontSize:13, fontWeight:600, color:C.muted, background:C.s2, border:`1px solid ${C.border}`, borderRadius:10, padding:'8px 14px', cursor:'pointer', whiteSpace:'nowrap', ...style }}>
         {children}
       </button>
     );
-    const IField = ({ label, value, onChange, type = 'text', placeholder, hint }) => (
-      <div style={{ marginBottom: 14 }}>
-        {label && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 6 }}>{label}</div>}
-        <input type={type} value={value} placeholder={placeholder} step={type === 'number' ? '0.01' : undefined} onChange={e => onChange(e.target.value)}
-          style={{ width: '100%', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 16px', color: C.text, fontFamily: 'DM Mono, monospace', fontSize: 16 }} />
-        {hint && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.muted, marginTop: 5 }}>{hint}</div>}
+    const IField = ({ label, value, onChange, type='text', placeholder, hint }) => (
+      <div style={{ marginBottom:14 }}>
+        {label && <div style={{ fontFamily:'Outfit,sans-serif', fontSize:12, fontWeight:600, color:C.muted, marginBottom:6 }}>{label}</div>}
+        <input type={type} value={value} placeholder={placeholder} step={type==='number'?'0.01':undefined} onChange={e=>onChange(e.target.value)}
+          style={{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:12, padding:'13px 16px', color:C.text, fontFamily:'DM Mono,monospace', fontSize:16 }} />
+        {hint && <div style={{ fontFamily:'Outfit,sans-serif', fontSize:12, color:C.muted, marginTop:5 }}>{hint}</div>}
       </div>
     );
     const SField = ({ label, value, onChange, options }) => (
-      <div style={{ marginBottom: 14 }}>
-        {label && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 6 }}>{label}</div>}
-        <select value={value} onChange={e => onChange(e.target.value)} style={{ width: '100%', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 12, padding: '13px 16px', color: C.text, fontFamily: 'Outfit, sans-serif', fontSize: 15 }}>
-          {options.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+      <div style={{ marginBottom:14 }}>
+        {label && <div style={{ fontFamily:'Outfit,sans-serif', fontSize:12, fontWeight:600, color:C.muted, marginBottom:6 }}>{label}</div>}
+        <select value={value} onChange={e=>onChange(e.target.value)} style={{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:12, padding:'13px 16px', color:C.text, fontFamily:'Outfit,sans-serif', fontSize:15 }}>
+          {options.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
         </select>
       </div>
     );
-    const SRow = ({ label, value, color = C.muted, sub }) => (
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: sub ? 'flex-start' : 'center', marginBottom: 11 }}>
+    const SRow = ({ label, value, color=C.muted, sub }) => (
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:sub?'flex-start':'center', marginBottom:11 }}>
         <div>
-          <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 14, color: C.text }}>{label}</span>
-          {sub && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, color: C.muted, marginTop: 1 }}>{sub}</div>}
+          <span style={{ fontFamily:'Outfit,sans-serif', fontSize:14, color:C.text }}>{label}</span>
+          {sub && <div style={{ fontFamily:'Outfit,sans-serif', fontSize:11, color:C.muted, marginTop:1 }}>{sub}</div>}
         </div>
-        <span style={{ fontFamily: 'DM Mono, monospace', fontSize: 15, color, fontWeight: 500 }}>{value}</span>
+        <span style={{ fontFamily:'DM Mono,monospace', fontSize:15, color, fontWeight:500 }}>{value}</span>
       </div>
     );
-    const Hr = ({ style }) => <div style={{ borderTop: `1px solid ${C.border}`, margin: '13px 0', ...style }} />;
-    const Notice = ({ children, color = C.amber }) => (
-      <div style={{ background: color + '18', border: `1px solid ${color}30`, borderRadius: 14, padding: '12px 16px', fontFamily: 'Outfit, sans-serif', fontSize: 13, color, lineHeight: 1.55, marginBottom: 14 }}>
-        {children}
-      </div>
+    const Hr = ({ style }) => <div style={{ borderTop:`1px solid ${C.border}`, margin:'13px 0', ...style }} />;
+    const Notice = ({ children, color=C.amber }) => (
+      <div style={{ background:color+'18', border:`1px solid ${color}30`, borderRadius:14, padding:'12px 16px', fontFamily:'Outfit,sans-serif', fontSize:13, color, lineHeight:1.55, marginBottom:14 }}>{children}</div>
     );
 
     /* ══════════════════════════════════════════════
        APP
     ══════════════════════════════════════════════ */
-    const DEF_SETTINGS = { income: 1900, expB: 380, adHocB: 80, endA: '2026-07-24', endB: '2026-12-14', payLag: 1 };
-
     function App() {
       const [screen, setScreen] = useState('home');
       const [firstRun, setFirstRun] = useState(false);
@@ -243,6 +219,8 @@
       const [weeks, setWeeks] = useState({});
       const [txs, setTxs] = useState([]);
       const [payees, setPayees] = useState([]);
+      // Persist week selection across Add screen navigations
+      const [addWk, setAddWk] = useState(getMon());
       const today = getMon();
 
       useEffect(() => {
@@ -251,7 +229,7 @@
         const w = hydrate('weeks');
         const t = hydrate('txs');
         const p = hydrate('payees');
-        if (s) setSettings({ ...DEF_SETTINGS, ...s }); else setFirstRun(true);
+        if (s) setSettings({...DEF_SETTINGS,...s}); else setFirstRun(true);
         if (c) setComms(c);
         if (w) setWeeks(w);
         if (t) setTxs(t);
@@ -259,45 +237,39 @@
       }, []);
 
       const saveSettings = s => { setSettings(s); persist('settings', s); };
-      const saveComms = c => { setComms(c); persist('comms', c); };
-      const saveWeek = (wk, d) => { const u = { ...weeks, [wk]: d }; setWeeks(u); persist('weeks', u); };
-      const addTx = tx => { const u = [...txs, { ...tx, id: Date.now() }]; setTxs(u); persist('txs', u); };
-      const delTx = id => { const u = txs.filter(t => t.id !== id); setTxs(u); persist('txs', u); };
-      const toggleClaim = id => { const u = txs.map(t => t.id === id ? { ...t, claimed: !t.claimed } : t); setTxs(u); persist('txs', u); };
-      const savePayees = p => { setPayees(p); persist('payees', p); };
-
-      const onImport = data => {
-        const s = { ...DEF_SETTINGS, ...data.settings };
-        const c = data.comms || [];
-        const w = data.weeks || {};
-        const t = data.txs || [];
-        const p = data.payees || [];
-        setSettings(s); persist('settings', s);
-        setComms(c);    persist('comms', c);
-        setWeeks(w);    persist('weeks', w);
-        setTxs(t);      persist('txs', t);
-        setPayees(p);   persist('payees', p);
+      const saveComms   = c => { setComms(c);    persist('comms', c); };
+      const saveWeek    = (wk, d) => { const u = {...weeks,[wk]:d}; setWeeks(u); persist('weeks', u); };
+      const addTx       = tx => { const u = [...txs,{...tx,id:Date.now()}]; setTxs(u); persist('txs', u); };
+      const delTx       = id => { const u = txs.filter(t=>t.id!==id); setTxs(u); persist('txs', u); };
+      const toggleClaim = id => { const u = txs.map(t=>t.id===id?{...t,claimed:!t.claimed}:t); setTxs(u); persist('txs', u); };
+      const savePayees  = p => { setPayees(p);   persist('payees', p); };
+      const onImport    = data => {
+        const s={...DEF_SETTINGS,...data.settings}, c=data.comms||[], w=data.weeks||{}, t=data.txs||[], p=data.payees||[];
+        setSettings(s); persist('settings',s);
+        setComms(c);    persist('comms',c);
+        setWeeks(w);    persist('weeks',w);
+        setTxs(t);      persist('txs',t);
+        setPayees(p);   persist('payees',p);
       };
 
-      const thisWD = { ...DEF_SETTINGS, ...(weeks[today] || {}), income: settings.income, expB: settings.expB, adHocB: settings.adHocB, ...(weeks[today] || {}) };
-      const thisStats = wkStats(today, thisWD, comms, txs);
-      const avgs = getAvgs(weeks, txs, comms);
-      const fcA = calcForecast(settings.endA, settings, weeks, comms, txs);
-      const fcB = calcForecast(settings.endB, settings, weeks, comms, txs);
-      const p = { screen, onNav: setScreen, settings, saveSettings, comms, saveComms, weeks, saveWeek, txs, addTx, delTx, toggleClaim, today, thisWD, thisStats, avgs, fcA, fcB, payees, savePayees, onImport };
+      const thisStats = wkStats(today, weeks[today], comms, txs);
+      const avgs      = getAvgs(weeks, txs, comms);
+      const fcA       = calcForecast(settings.endA, settings, weeks, comms, txs);
+      const fcB       = calcForecast(settings.endB, settings, weeks, comms, txs);
+      const shared    = { screen, onNav:setScreen, settings, saveSettings, comms, saveComms, weeks, saveWeek, txs, addTx, delTx, toggleClaim, today, thisStats, avgs, fcA, fcB, payees, savePayees, onImport, addWk, setAddWk };
 
       return (
-        <div style={{ minHeight: '100dvh', background: C.bg, color: C.text, display: 'flex', flexDirection: 'column', maxWidth: 430, margin: '0 auto' }}>
-          {firstRun && <SetupModal onComplete={s => { saveSettings(s); setFirstRun(false); }} />}
-          <Header {...p} />
-          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px 92px' }}>
-            {screen === 'home'     && <HomeScreen {...p} />}
-            {screen === 'week'     && <WeekScreen {...p} />}
-            {screen === 'add'      && <AddScreen {...p} />}
-            {screen === 'history'  && <HistoryScreen {...p} />}
-            {screen === 'forecast' && <ForecastScreen {...p} />}
-            {screen === 'register' && <RegisterScreen {...p} />}
-            {screen === 'settings' && <SettingsScreen {...p} />}
+        <div style={{ minHeight:'100dvh', background:C.bg, color:C.text, display:'flex', flexDirection:'column', maxWidth:430, margin:'0 auto' }}>
+          {firstRun && <SetupModal onComplete={s=>{saveSettings(s);setFirstRun(false);}} />}
+          <Header {...shared} />
+          <div style={{ flex:1, overflowY:'auto', padding:'16px 18px 92px' }}>
+            {screen==='home'     && <HomeScreen     {...shared} />}
+            {screen==='week'     && <WeekScreen     {...shared} />}
+            {screen==='add'      && <AddScreen      {...shared} />}
+            {screen==='history'  && <HistoryScreen  {...shared} />}
+            {screen==='forecast' && <ForecastScreen {...shared} />}
+            {screen==='register' && <RegisterScreen {...shared} />}
+            {screen==='settings' && <SettingsScreen {...shared} />}
           </div>
           {['home','week','history','forecast'].includes(screen) && <BottomNav screen={screen} onNav={setScreen} />}
         </div>
@@ -305,30 +277,26 @@
     }
 
     /* ══════════════════════════════════════════════ HEADER ══ */
-    const TITLES = { home: 'Tracker', week: 'This Week', history: 'History', forecast: 'Forecast', register: 'Commitments', settings: 'Settings', add: 'Add Transaction' };
+    const TITLES = { home:'Tracker', week:'This Week', history:'History', forecast:'Forecast', register:'Commitments', settings:'Settings', add:'Add Transaction' };
     const Header = ({ screen, onNav, comms }) => {
       const isBack = ['register','settings','add'].includes(screen);
-      const backDest = screen === 'register' || screen === 'add' ? 'week' : 'home';
+      const backDest = screen==='add'?'week':screen==='register'?'week':'home';
       return (
-        <div style={{ padding: '22px 18px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {isBack ? (
-              <button onClick={() => onNav(backDest)} style={{ color: C.pink, fontFamily: 'Outfit, sans-serif', fontSize: 14, fontWeight: 700 }}>← Back</button>
-            ) : (
-              <>
-                <div style={{ width: 8, height: 8, background: C.pink, borderRadius: '50%', boxShadow: `0 0 8px ${C.pink}` }} />
-                <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: 20, color: C.text }}>{TITLES[screen]}</span>
-              </>
-            )}
+        <div style={{ padding:'22px 18px 14px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            {isBack
+              ? <button onClick={()=>onNav(backDest)} style={{ color:C.pink, fontFamily:'Outfit,sans-serif', fontSize:14, fontWeight:700 }}>← Back</button>
+              : <><div style={{ width:8,height:8,background:C.pink,borderRadius:'50%',boxShadow:`0 0 8px ${C.pink}` }}/><span style={{ fontFamily:'Outfit,sans-serif',fontWeight:800,fontSize:20,color:C.text }}>{TITLES[screen]}</span></>
+            }
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {screen === 'week' && (
-              <button onClick={() => onNav('register')} style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, fontWeight: 700, color: C.muted, background: C.s2, border: `1px solid ${C.border}`, borderRadius: 10, padding: '7px 12px', cursor: 'pointer' }}>
-                Bills {comms.length > 0 && <span style={{ color: C.pink }}>· {comms.length}</span>}
+          <div style={{ display:'flex', gap:8 }}>
+            {screen==='week' && (
+              <button onClick={()=>onNav('register')} style={{ fontFamily:'Outfit,sans-serif', fontSize:12, fontWeight:700, color:C.muted, background:C.s2, border:`1px solid ${C.border}`, borderRadius:10, padding:'7px 12px', cursor:'pointer' }}>
+                Bills {comms.length>0&&<span style={{color:C.pink}}>· {comms.length}</span>}
               </button>
             )}
             {!['settings','add','register'].includes(screen) && (
-              <button onClick={() => onNav('settings')} style={{ color: C.muted, background: C.s2, border: `1px solid ${C.border}`, borderRadius: 10, padding: '7px 11px', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>⚙</button>
+              <button onClick={()=>onNav('settings')} style={{ color:C.muted, background:C.s2, border:`1px solid ${C.border}`, borderRadius:10, padding:'7px 11px', cursor:'pointer', fontSize:16, lineHeight:1 }}>⚙</button>
             )}
           </div>
         </div>
@@ -336,16 +304,16 @@
     };
 
     /* ══════════════════════════════════════════════ BOTTOM NAV ══ */
-    const NAV = [{ k:'home', icon:'◈', label:'Home' }, { k:'week', icon:'◫', label:'Week' }, { k:'history', icon:'≡', label:'History' }, { k:'forecast', icon:'◎', label:'Forecast' }];
+    const NAV = [{k:'home',icon:'◈',label:'Home'},{k:'week',icon:'◫',label:'Week'},{k:'history',icon:'≡',label:'History'},{k:'forecast',icon:'◎',label:'Forecast'}];
     const BottomNav = ({ screen, onNav }) => (
-      <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 430, background: C.s1, borderTop: `1px solid ${C.border}`, display: 'flex', paddingBottom: 'env(safe-area-inset-bottom,0)' }}>
-        {NAV.map(({ k, icon, label }) => {
-          const active = screen === k;
+      <div style={{ position:'fixed', bottom:0, left:'50%', transform:'translateX(-50%)', width:'100%', maxWidth:430, background:C.s1, borderTop:`1px solid ${C.border}`, display:'flex', paddingBottom:'env(safe-area-inset-bottom,0)' }}>
+        {NAV.map(({k,icon,label})=>{
+          const active=screen===k;
           return (
-            <button key={k} onClick={() => onNav(k)} style={{ flex: 1, padding: '12px 0 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, color: active ? C.pink : C.muted, background: 'none', border: 'none', cursor: 'pointer' }}>
-              <span style={{ fontSize: 20, lineHeight: 1 }}>{icon}</span>
-              <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 10, fontWeight: active ? 700 : 500, letterSpacing: 0.5 }}>{label}</span>
-              {active && <div style={{ width: 4, height: 4, background: C.pink, borderRadius: '50%' }} />}
+            <button key={k} onClick={()=>onNav(k)} style={{ flex:1, padding:'12px 0 10px', display:'flex', flexDirection:'column', alignItems:'center', gap:3, color:active?C.pink:C.muted, background:'none', border:'none', cursor:'pointer' }}>
+              <span style={{ fontSize:20, lineHeight:1 }}>{icon}</span>
+              <span style={{ fontFamily:'Outfit,sans-serif', fontSize:10, fontWeight:active?700:500, letterSpacing:0.5 }}>{label}</span>
+              {active&&<div style={{ width:4,height:4,background:C.pink,borderRadius:'50%' }}/>}
             </button>
           );
         })}
@@ -354,19 +322,19 @@
 
     /* ══════════════════════════════════════════════ SETUP MODAL ══ */
     const SetupModal = ({ onComplete }) => {
-      const [income, setIncome] = useState('1900');
-      const [expB, setExpB] = useState('380');
-      const [adHocB, setAdHocB] = useState('80');
+      const [income,setIncome]=useState('1900');
+      const [expB,setExpB]=useState('380');
+      const [adHocB,setAdHocB]=useState('80');
       return (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(7,8,15,0.96)', backdropFilter: 'blur(8px)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 26, padding: 28, width: '100%', maxWidth: 360 }}>
-            <div style={{ width: 40, height: 4, background: C.pink, borderRadius: 2, marginBottom: 22, boxShadow: `0 0 12px ${C.pink}` }} />
-            <h2 style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: 28, color: C.text, margin: '0 0 8px' }}>Welcome 👋</h2>
-            <p style={{ fontFamily: 'Outfit, sans-serif', fontSize: 14, color: C.muted, margin: '0 0 26px', lineHeight: 1.6 }}>Quick setup — you can change all of this in Settings.</p>
+        <div style={{ position:'fixed',inset:0,background:'rgba(7,8,15,0.96)',backdropFilter:'blur(8px)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:20 }}>
+          <div style={{ background:C.s1,border:`1px solid ${C.border}`,borderRadius:26,padding:28,width:'100%',maxWidth:360 }}>
+            <div style={{ width:40,height:4,background:C.pink,borderRadius:2,marginBottom:22,boxShadow:`0 0 12px ${C.pink}` }}/>
+            <h2 style={{ fontFamily:'Outfit,sans-serif',fontWeight:800,fontSize:28,color:C.text,margin:'0 0 8px' }}>Welcome 👋</h2>
+            <p style={{ fontFamily:'Outfit,sans-serif',fontSize:14,color:C.muted,margin:'0 0 26px',lineHeight:1.6 }}>Quick setup — everything can be changed in Settings.</p>
             <IField label="Weekly net income" value={income} onChange={setIncome} type="number" placeholder="1900" />
-            <IField label="Weekly expenses budget" value={expB} onChange={setExpB} type="number" placeholder="380" hint="Amount you put aside for claimable expenses" />
+            <IField label="Weekly expenses budget" value={expB} onChange={setExpB} type="number" placeholder="380" hint="Amount you set aside for claimable expenses" />
             <IField label="Estimated weekly ad hoc" value={adHocB} onChange={setAdHocB} type="number" placeholder="80" hint="App will refine this from your history" />
-            <PBtn onClick={() => onComplete({ ...DEF_SETTINGS, income: +income||1900, expB: +expB||380, adHocB: +adHocB||80 })}>Start tracking →</PBtn>
+            <PBtn onClick={()=>onComplete({...DEF_SETTINGS,income:+income||1900,expB:+expB||380,adHocB:+adHocB||80})}>Start tracking →</PBtn>
           </div>
         </div>
       );
@@ -374,63 +342,71 @@
 
     /* ══════════════════════════════════════════════ HOME ══ */
     const HomeScreen = ({ fcA, fcB, settings, thisStats, today, onNav, avgs, weeks, comms, txs }) => {
-      const weeksToA = Math.max(0, wkRange(today, settings.endA).length - 1);
-      const weeksToB = Math.max(0, wkRange(today, settings.endB).length - 1);
-      const saved = totalSaved(weeks, comms, txs);
+      const weeksToA = Math.max(0, wkRange(today,settings.endA).length-1);
+      const weeksToB = Math.max(0, wkRange(today,settings.endB).length-1);
+      const saved = totalSaved(weeks,comms,txs);
       const d = new Date();
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.dim }}>{d.getDate()} {d.toLocaleString('en-GB', { month: 'long', year: 'numeric' })}</div>
-          <div style={{ background: 'linear-gradient(145deg,#0D0914 0%,#110A1A 60%,#0A0D16 100%)', border: `1px solid ${C.pink}35`, borderRadius: 24, padding: 22, position: 'relative', overflow: 'hidden' }}>
-            <div style={{ position: 'absolute', top: -40, right: -40, width: 160, height: 160, background: C.pink, opacity: 0.05, borderRadius: '50%', filter: 'blur(30px)', pointerEvents: 'none' }} />
-            <Lbl style={{ color: C.pink + 'AA' }}>Walk-away · {fmtDate(settings.endA)}</Lbl>
-            <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 56, fontWeight: 500, color: C.pink, lineHeight: 1, margin: '6px 0 10px', textShadow: `0 0 40px ${C.pink}50` }}>{fmt(fcA)}</div>
-            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-              <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.muted }}>{weeksToA} weeks left</span>
-              {avgs.n > 0 && <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.muted }}>avg {fmt(avgs.saved)}/wk</span>}
-              {saved > 0 && <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.pink + 'BB' }}>{fmt(saved)} banked</span>}
+        <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
+          <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.dim }}>{d.getDate()} {d.toLocaleString('en-GB',{month:'long',year:'numeric'})}</div>
+
+          {/* Walk-away hero */}
+          <div style={{ background:'linear-gradient(145deg,#0D0914 0%,#110A1A 60%,#0A0D16 100%)',border:`1px solid ${C.pink}35`,borderRadius:24,padding:22,position:'relative',overflow:'hidden' }}>
+            <div style={{ position:'absolute',top:-40,right:-40,width:160,height:160,background:C.pink,opacity:0.05,borderRadius:'50%',filter:'blur(30px)',pointerEvents:'none' }}/>
+            <Lbl style={{ color:C.pink+'AA' }}>Walk-away · {fmtDate(settings.endA)}</Lbl>
+            <div style={{ fontFamily:'DM Mono,monospace',fontSize:56,fontWeight:500,color:C.pink,lineHeight:1,margin:'6px 0 10px',textShadow:`0 0 40px ${C.pink}50` }}>{fmt(fcA)}</div>
+            <div style={{ display:'flex',gap:14,flexWrap:'wrap' }}>
+              <span style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.muted }}>{weeksToA} weeks left</span>
+              {avgs.n>0&&<span style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.muted }}>avg {fmt(avgs.saved)}/wk</span>}
+              {saved>0&&<span style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.pink+'BB' }}>{fmt(saved)} banked</span>}
             </div>
           </div>
-          <Card style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+
+          {/* Extension card */}
+          <Card style={{ display:'flex',justifyContent:'space-between',alignItems:'center' }}>
             <div>
               <Lbl>If extended · {fmtDate(settings.endB)}</Lbl>
-              <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 28, fontWeight: 500, color: C.text }}>{fmt(fcB)}</div>
-              <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.green, marginTop: 5 }}>{fmt(fcB - fcA, true)} · {weeksToB - weeksToA} extra weeks</div>
+              <div style={{ fontFamily:'DM Mono,monospace',fontSize:28,fontWeight:500,color:C.text }}>{fmt(fcB)}</div>
+              <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.green,marginTop:5 }}>{fmt(fcB-fcA,true)} · {weeksToB-weeksToA} extra weeks</div>
             </div>
-            <div style={{ background: C.greenBg, border: `1px solid ${C.green}30`, borderRadius: 14, padding: '14px 16px', textAlign: 'center', minWidth: 90 }}>
-              <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 10, color: C.muted, marginBottom: 4 }}>extension</div>
-              <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 18, color: C.green, fontWeight: 500 }}>{fmt(fcB - fcA)}</div>
+            <div style={{ background:C.greenBg,border:`1px solid ${C.green}30`,borderRadius:14,padding:'14px 16px',textAlign:'center',minWidth:90 }}>
+              <div style={{ fontFamily:'Outfit,sans-serif',fontSize:10,color:C.muted,marginBottom:4 }}>extension</div>
+              <div style={{ fontFamily:'DM Mono,monospace',fontSize:18,color:C.green,fontWeight:500 }}>{fmt(fcB-fcA)}</div>
             </div>
           </Card>
+
+          {/* This week summary */}
           <Card>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <div><Lbl style={{ marginBottom: 3 }}>This week</Lbl><div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.dim }}>{wkLbl(today)}</div></div>
-              <GBtn onClick={() => onNav('week')}>Details →</GBtn>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14 }}>
+              <div><Lbl style={{ marginBottom:3 }}>This week</Lbl><div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.dim }}>{wkLbl(today)}</div></div>
+              <GBtn onClick={()=>onNav('week')}>Details →</GBtn>
             </div>
             <SRow label="Income" value={fmt(thisStats.income)} color={C.green} />
             <SRow label="Bills" value={fmt(thisStats.bills)} color={C.blue} />
             <SRow label="Ad hoc" value={fmt(thisStats.adHoc)} />
-            {thisStats.oneOff > 0 && <SRow label="One-offs" value={fmt(thisStats.oneOff)} color={C.amber} />}
+            {thisStats.oneOff>0&&<SRow label="One-offs" value={fmt(thisStats.oneOff)} color={C.amber} />}
             <Hr />
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 15, color: C.text }}>Net saved</span>
-              <span style={{ fontFamily: 'DM Mono, monospace', fontSize: 22, color: thisStats.saved >= 0 ? C.green : C.red, fontWeight: 500 }}>{fmt(thisStats.saved)}</span>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+              <span style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:15,color:C.text }}>Net saved</span>
+              <span style={{ fontFamily:'DM Mono,monospace',fontSize:22,color:thisStats.saved>=0?C.green:C.red,fontWeight:500 }}>{fmt(thisStats.saved)}</span>
             </div>
-            {thisStats.expRet > 0 && (
-              <div style={{ marginTop: 12, background: C.amberBg, border: `1px solid ${C.amber}28`, borderRadius: 12, padding: '10px 14px', fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.amber }}>
-                ↩ Move {fmt(thisStats.expRet)} back to Expenses Space
+            {thisStats.expS>0&&thisStats.expS<+(settings.expB||380)&&(
+              <div style={{ marginTop:12,background:C.amberBg,border:`1px solid ${C.amber}28`,borderRadius:12,padding:'10px 14px',fontFamily:'Outfit,sans-serif',fontSize:13,color:C.amber }}>
+                ↩ Move {fmt((+(settings.expB||380))-thisStats.expS)} back to Expenses Space
               </div>
             )}
           </Card>
-          <PBtn onClick={() => onNav('add')}>+ Add transaction</PBtn>
-          {avgs.n > 0 && (
+
+          <PBtn onClick={()=>onNav('add')}>+ Add transaction</PBtn>
+
+          {avgs.n>0&&(
             <Card>
-              <Lbl>{avgs.n} week{avgs.n !== 1 ? 's' : ''} of data</Lbl>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                {[{l:'Avg weekly saving',v:fmt(avgs.saved),c:C.green},{l:'Avg ad hoc',v:fmt(avgs.adHoc),c:C.text},{l:'Avg weekly bills',v:fmt(avgs.bills),c:C.blue}].map(({l,v,c}) => (
-                  <div key={l} style={{ background: C.s2, borderRadius: 13, padding: '12px 13px' }}>
-                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, color: C.muted, marginBottom: 5 }}>{l}</div>
-                    <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 16, color: c, fontWeight: 500 }}>{v}</div>
+              <Lbl>{avgs.n} week{avgs.n!==1?'s':''} of data</Lbl>
+              <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10 }}>
+                {[{l:'Avg weekly saving',v:fmt(avgs.saved),c:C.green},{l:'Avg ad hoc',v:fmt(avgs.adHoc),c:C.text},{l:'Avg weekly bills',v:fmt(avgs.bills),c:C.blue}].map(({l,v,c})=>(
+                  <div key={l} style={{ background:C.s2,borderRadius:13,padding:'12px 13px' }}>
+                    <div style={{ fontFamily:'Outfit,sans-serif',fontSize:11,color:C.muted,marginBottom:5 }}>{l}</div>
+                    <div style={{ fontFamily:'DM Mono,monospace',fontSize:16,color:c,fontWeight:500 }}>{v}</div>
                   </div>
                 ))}
               </div>
@@ -441,92 +417,95 @@
     };
 
     /* ══════════════════════════════════════════════ WEEK ══ */
-    const WeekScreen = ({ today, thisWD, thisStats, saveWeek, delTx, toggleClaim, onNav, settings, comms, avgs }) => {
-      const [editing, setEditing] = useState(false);
-      const [income, setIncome] = useState(String(thisWD.income || settings.income));
-      const [expB, setExpB] = useState(String(thisWD.expB || settings.expB));
-      const [adHocB, setAdHocB] = useState(String(thisWD.adHocB || settings.adHocB));
-      const saveEdit = () => { saveWeek(today, { ...thisWD, income: +income, expB: +expB, adHocB: +adHocB }); setEditing(false); };
+    const WeekScreen = ({ today, weeks, thisStats, saveWeek, delTx, toggleClaim, onNav, settings }) => {
+      const [editIncome, setEditIncome] = useState(false);
+      const [incomeVal, setIncomeVal] = useState(String(weeks[today]?.income || settings.income));
+      const saveIncome = () => { saveWeek(today, {...(weeks[today]||{}), income:+incomeVal}); setEditIncome(false); };
+
       const TX_GROUPS = [
-        { type:'bill',   label:'Bills',         color: C.blue },
-        { type:'adhoc',  label:'Weekly Ad Hoc', color: C.green },
-        { type:'oneoff', label:'One-Offs',      color: C.amber },
-        { type:'exp',    label:'Expenses',      color: C.lavender },
+        {type:'adhoc',  label:'Weekly Ad Hoc', color:C.green},
+        {type:'oneoff', label:'One-Offs',      color:C.amber},
+        {type:'exp',    label:'Expenses',      color:C.lavender},
       ];
+
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
+          {/* Week header */}
           <Card>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start' }}>
               <div>
-                <Lbl style={{ marginBottom: 4 }}>{wkLbl(today)}</Lbl>
-                <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 40, color: thisStats.saved >= 0 ? C.green : C.red, fontWeight: 500, lineHeight: 1 }}>{fmt(thisStats.saved)}</div>
-                <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.muted, marginTop: 5 }}>saved this week</div>
+                <Lbl style={{ marginBottom:4 }}>{wkLbl(today)}</Lbl>
+                <div style={{ fontFamily:'DM Mono,monospace',fontSize:40,color:thisStats.saved>=0?C.green:C.red,fontWeight:500,lineHeight:1 }}>{fmt(thisStats.saved)}</div>
+                <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,marginTop:5 }}>saved this week</div>
               </div>
-              <GBtn onClick={() => setEditing(!editing)}>{editing ? 'Cancel' : 'Edit'}</GBtn>
+              <GBtn onClick={()=>setEditIncome(!editIncome)}>{editIncome?'Cancel':'Edit income'}</GBtn>
             </div>
-            {editing ? (
-              <div style={{ marginTop: 18 }}>
-                <Hr style={{ marginTop: 0 }} />
-                <IField label="Income this week" value={income} onChange={setIncome} type="number" />
-                <IField label="Expenses budget" value={expB} onChange={setExpB} type="number" />
-                <IField label="Ad hoc budget" value={adHocB} onChange={setAdHocB} type="number" hint={avgs.n > 0 ? `Your average is ${fmt(avgs.adHoc)}` : ''} />
-                <PBtn onClick={saveEdit}>Save week</PBtn>
+            {editIncome?(
+              <div style={{ marginTop:18 }}>
+                <Hr style={{ marginTop:0 }}/>
+                <IField label="Income this week" value={incomeVal} onChange={setIncomeVal} type="number" />
+                <PBtn onClick={saveIncome}>Save</PBtn>
               </div>
-            ) : (
-              <div style={{ marginTop: 14 }}>
-                <Hr style={{ marginTop: 0 }} />
+            ):(
+              <div style={{ marginTop:14 }}>
+                <Hr style={{ marginTop:0 }}/>
                 <SRow label="Income" value={fmt(thisStats.income)} color={C.green} />
-                <SRow label="Bills" value={fmt(thisStats.bills)} color={C.blue} />
-                <SRow label="Ad hoc" value={`${fmt(thisStats.adHoc)} / ${fmt(thisStats.adHocB)}`} color={C.text} sub="spent / budget" />
+                <SRow label="Bills (from register)" value={fmt(thisStats.bills)} color={C.blue} />
+                <SRow label="Ad hoc" value={fmt(thisStats.adHoc)} color={C.text} />
                 <SRow label="One-offs" value={fmt(thisStats.oneOff)} color={C.amber} />
                 <Hr />
-                <SRow label="Expenses spent" value={fmt(thisStats.expS)} color={C.lavender} sub="pass-through · doesn't affect savings" />
-                {thisStats.expRet > 0 && (
-                  <div style={{ background: C.amberBg, border: `1px solid ${C.amber}28`, borderRadius: 12, padding: '10px 14px', fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.amber, marginTop: 8 }}>
-                    ↩ Return {fmt(thisStats.expRet)} to Expenses Space
+                <SRow label="Expenses" value={fmt(thisStats.expS)} color={C.lavender} sub="pass-through · doesn't affect savings" />
+                {thisStats.expS>0&&thisStats.expS<+(settings.expB||380)&&(
+                  <div style={{ background:C.amberBg,border:`1px solid ${C.amber}28`,borderRadius:12,padding:'10px 14px',fontFamily:'Outfit,sans-serif',fontSize:13,color:C.amber,marginTop:8 }}>
+                    ↩ Return {fmt((+(settings.expB||380))-thisStats.expS)} to Expenses Space
                   </div>
                 )}
               </div>
             )}
           </Card>
-          {thisStats.commsWk.length > 0 && (
+
+          {/* Bills due from register */}
+          {thisStats.commsWk.length>0&&(
             <Card>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <Lbl style={{ marginBottom: 0 }}>Bills due this week</Lbl>
-                <Tag color={C.blue}>{fmt(thisStats.commsWk.reduce((s,c) => s + +c.amount, 0))}</Tag>
+              <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12 }}>
+                <Lbl style={{ marginBottom:0 }}>Bills due this week</Lbl>
+                <Tag color={C.blue}>{fmt(thisStats.commsWk.reduce((s,c)=>s+ +c.amount,0))}</Tag>
               </div>
-              {thisStats.commsWk.map(c => <SRow key={c.id} label={c.name} value={fmt(c.amount)} color={C.blue} sub={c.cat === 'sub' ? 'Subscription' : 'Bill'} />)}
+              {thisStats.commsWk.map(c=><SRow key={c.id} label={c.name} value={fmt(c.amount)} color={C.blue} sub={c.cat==='sub'?'Subscription':'Bill'} />)}
             </Card>
           )}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 2px' }}>
-            <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 16, color: C.text }}>Transactions</span>
-            <PBtn onClick={() => onNav('add')} style={{ width: 'auto', padding: '10px 18px', fontSize: 13, borderRadius: 12 }}>+ Add</PBtn>
+
+          {/* Transactions */}
+          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'0 2px' }}>
+            <span style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:16,color:C.text }}>Transactions</span>
+            <PBtn onClick={()=>onNav('add')} style={{ width:'auto',padding:'10px 18px',fontSize:13,borderRadius:12 }}>+ Add</PBtn>
           </div>
-          {thisStats.txs.length === 0 ? (
-            <Card style={{ textAlign: 'center', padding: '30px 20px' }}>
-              <div style={{ fontSize: 30, marginBottom: 10 }}>◌</div>
-              <div style={{ fontFamily: 'Outfit, sans-serif', color: C.muted, fontSize: 15 }}>No transactions yet</div>
-              <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.dim, marginTop: 5 }}>Tap Add to log something</div>
+
+          {thisStats.txs.length===0?(
+            <Card style={{ textAlign:'center',padding:'30px 20px' }}>
+              <div style={{ fontSize:30,marginBottom:10 }}>◌</div>
+              <div style={{ fontFamily:'Outfit,sans-serif',color:C.muted,fontSize:15 }}>No transactions yet</div>
+              <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.dim,marginTop:5 }}>Tap Add to log something</div>
             </Card>
-          ) : TX_GROUPS.map(({ type, label, color }) => {
-            const group = thisStats.txs.filter(t => t.type === type);
-            if (!group.length) return null;
+          ):TX_GROUPS.map(({type,label,color})=>{
+            const group=thisStats.txs.filter(t=>t.type===type);
+            if(!group.length) return null;
             return (
-              <Card key={type} style={{ padding: 0, overflow: 'hidden' }}>
-                <div style={{ padding: '10px 16px 8px', background: C.s2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, fontWeight: 700, color, letterSpacing: 1.2, textTransform: 'uppercase' }}>{label}</span>
-                  <span style={{ fontFamily: 'DM Mono, monospace', fontSize: 13, color, fontWeight: 500 }}>{fmt(group.reduce((s,t) => s + +t.amount, 0))}</span>
+              <Card key={type} style={{ padding:0,overflow:'hidden' }}>
+                <div style={{ padding:'10px 16px 8px',background:C.s2,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                  <span style={{ fontFamily:'Outfit,sans-serif',fontSize:11,fontWeight:700,color,letterSpacing:1.2,textTransform:'uppercase' }}>{label}</span>
+                  <span style={{ fontFamily:'DM Mono,monospace',fontSize:13,color,fontWeight:500 }}>{fmt(group.reduce((s,t)=>s+ +t.amount,0))}</span>
                 </div>
-                {group.map((tx, i) => (
-                  <div key={tx.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: i < group.length-1 ? `1px solid ${C.border}` : 'none' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 14, fontWeight: 600, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tx.name}</div>
-                      {tx.type === 'exp' && <div style={{ fontSize: 11, color: tx.claimed ? C.green : C.amber, marginTop: 2 }}>{tx.claimed ? '✓ Claimed' : '○ Not claimed'}</div>}
+                {group.map((tx,i)=>(
+                  <div key={tx.id} style={{ display:'flex',alignItems:'center',gap:12,padding:'12px 16px',borderBottom:i<group.length-1?`1px solid ${C.border}`:'none' }}>
+                    <div style={{ flex:1,minWidth:0 }}>
+                      <div style={{ fontFamily:'Outfit,sans-serif',fontSize:14,fontWeight:600,color:C.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{tx.name}</div>
+                      {tx.type==='exp'&&<div style={{ fontSize:11,color:tx.claimed?C.green:C.amber,marginTop:2 }}>{tx.claimed?'✓ Claimed':'○ Not claimed'}</div>}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontFamily: 'DM Mono, monospace', fontSize: 14, color, fontWeight: 500 }}>{fmt(tx.amount)}</span>
-                      {tx.type === 'exp' && <button onClick={() => toggleClaim(tx.id)} style={{ color: tx.claimed ? C.green : C.amber, fontSize: 16, cursor: 'pointer', lineHeight: 1, padding: '2px' }}>{tx.claimed ? '✓' : '○'}</button>}
-                      <button onClick={() => delTx(tx.id)} style={{ color: C.dim, fontSize: 13, cursor: 'pointer', padding: '4px 5px', borderRadius: 6, background: C.s2 }}>✕</button>
+                    <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+                      <span style={{ fontFamily:'DM Mono,monospace',fontSize:14,color,fontWeight:500 }}>{fmt(tx.amount)}</span>
+                      {tx.type==='exp'&&<button onClick={()=>toggleClaim(tx.id)} style={{ color:tx.claimed?C.green:C.amber,fontSize:16,cursor:'pointer',lineHeight:1,padding:'2px' }}>{tx.claimed?'✓':'○'}</button>}
+                      <button onClick={()=>delTx(tx.id)} style={{ color:C.dim,fontSize:13,cursor:'pointer',padding:'4px 5px',borderRadius:6,background:C.s2 }}>✕</button>
                     </div>
                   </div>
                 ))}
@@ -539,61 +518,58 @@
 
     /* ══════════════════════════════════════════════ ADD ══ */
     const TX_TYPES = [
-      { v:'adhoc',  l:'Ad Hoc',   desc:'Regular everyday spend',        color: C.green },
-      { v:'oneoff', l:'One-Off',  desc:'Excluded from your averages',   color: C.amber },
-      { v:'exp',    l:'Expenses', desc:'Claimable · no savings impact', color: C.lavender },
+      {v:'adhoc',  l:'Ad Hoc',   desc:'Regular everyday spend',        color:C.green},
+      {v:'oneoff', l:'One-Off',  desc:'Excluded from your averages',   color:C.amber},
+      {v:'exp',    l:'Expenses', desc:'Claimable · no savings impact', color:C.lavender},
     ];
 
-    const AddScreen = ({ today, addTx, onNav, avgs, payees, savePayees }) => {
-      const [type, setType] = useState('adhoc');
-      const [name, setName] = useState('');
+    const AddScreen = ({ today, addTx, saveWeek, weeks, onNav, avgs, payees, savePayees, addWk, setAddWk }) => {
+      const [type, setType]     = useState('adhoc');
+      const [name, setName]     = useState('');
       const [amount, setAmount] = useState('');
-      const [wk, setWk] = useState(today);
-      const [done, setDone] = useState(false);
-      const cfg = TX_TYPES.find(t => t.v === type);
+      const [done, setDone]     = useState(false);
+      const cfg = TX_TYPES.find(t=>t.v===type);
       const canAdd = name.trim() && amount;
-      const typePayees = payees.filter(p => p.type === type);
-
-      // All weeks from start up to and including current week
+      const typePayees = payees.filter(p=>p.type===type);
       const allWks = wkRange(START, today).reverse();
 
       const handle = () => {
         if (!canAdd) return;
-        addTx({ wk, type, name: name.trim(), amount: +amount, date: new Date().toISOString().slice(0,10) });
+        addTx({ wk:addWk, type, name:name.trim(), amount:+amount, date:new Date().toISOString().slice(0,10) });
+        // Ensure the week record exists with at least income=0 so it shows in history
+        if (!weeks[addWk]) saveWeek(addWk, { income:0 });
         setDone(true); setName(''); setAmount('');
-        setTimeout(() => setDone(false), 1600);
+        setTimeout(()=>setDone(false), 1600);
       };
 
       const saveNewPayee = () => {
         if (!name.trim()) return;
-        const already = payees.some(p => p.name === name.trim() && p.type === type);
-        if (!already) savePayees([...payees, { id: Date.now(), name: name.trim(), type }]);
+        const already = payees.some(p=>p.name===name.trim()&&p.type===type);
+        if (!already) savePayees([...payees,{id:Date.now(),name:name.trim(),type}]);
       };
 
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
 
-          {/* Week selector */}
+          {/* Week selector — persists across navigations */}
           <div>
             <Lbl>Week</Lbl>
-            <select value={wk} onChange={e => setWk(e.target.value)}
-              style={{ width: '100%', background: C.bg, border: `1px solid ${wk === today ? C.border : C.pink}`, borderRadius: 12, padding: '13px 16px', color: wk === today ? C.text : C.pink, fontFamily: 'Outfit, sans-serif', fontSize: 15 }}>
-              {allWks.map(w => (
-                <option key={w} value={w}>{wkLbl(w)}{w === today ? ' (current)' : ''}</option>
-              ))}
+            <select value={addWk} onChange={e=>setAddWk(e.target.value)}
+              style={{ width:'100%', background:C.bg, border:`1px solid ${addWk===today?C.border:C.pink}`, borderRadius:12, padding:'13px 16px', color:addWk===today?C.text:C.pink, fontFamily:'Outfit,sans-serif', fontSize:15 }}>
+              {allWks.map(w=><option key={w} value={w}>{wkLbl(w)}{w===today?' (current)':''}</option>)}
             </select>
-            {wk !== today && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.pink, marginTop: 5 }}>Adding to a past week</div>}
+            {addWk!==today&&<div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.pink,marginTop:5 }}>Adding to a past week</div>}
           </div>
 
           {/* Quick-pick payees */}
-          {typePayees.length > 0 && (
+          {typePayees.length>0&&(
             <div>
               <Lbl>Quick pick</Lbl>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {typePayees.map(p => (
-                  <div key={p.id} style={{ display: 'flex', alignItems: 'center', background: C.s2, border: `1px solid ${name === p.name ? cfg.color : C.border}`, borderRadius: 100, overflow: 'hidden' }}>
-                    <button onClick={() => setName(p.name)} style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, fontWeight: 600, color: name === p.name ? cfg.color : C.text, padding: '7px 10px 7px 14px', cursor: 'pointer', background: 'none' }}>{p.name}</button>
-                    <button onClick={() => savePayees(payees.filter(x => x.id !== p.id))} style={{ color: C.dim, fontSize: 11, padding: '7px 10px 7px 2px', cursor: 'pointer', background: 'none' }}>✕</button>
+              <div style={{ display:'flex',flexWrap:'wrap',gap:8 }}>
+                {typePayees.map(p=>(
+                  <div key={p.id} style={{ display:'flex',alignItems:'center',background:C.s2,border:`1px solid ${name===p.name?cfg.color:C.border}`,borderRadius:100,overflow:'hidden' }}>
+                    <button onClick={()=>setName(p.name)} style={{ fontFamily:'Outfit,sans-serif',fontSize:13,fontWeight:600,color:name===p.name?cfg.color:C.text,padding:'7px 10px 7px 14px',cursor:'pointer',background:'none' }}>{p.name}</button>
+                    <button onClick={()=>savePayees(payees.filter(x=>x.id!==p.id))} style={{ color:C.dim,fontSize:11,padding:'7px 10px 7px 2px',cursor:'pointer',background:'none' }}>✕</button>
                   </div>
                 ))}
               </div>
@@ -602,95 +578,104 @@
 
           <IField label="Description" value={name} onChange={setName} placeholder="e.g. Fuel to Scunthorpe, Hotel, Lunch…" />
 
-          {name.trim() && !typePayees.some(p => p.name === name.trim()) && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: -8 }}>
-              <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.muted, flex: 1 }}>Save "{name.trim()}" as a quick pick?</span>
-              <button onClick={saveNewPayee} style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, fontWeight: 700, color: cfg.color, background: cfg.color+'18', border: `1px solid ${cfg.color}30`, borderRadius: 8, padding: '5px 10px', cursor: 'pointer' }}>Save</button>
+          {name.trim()&&!typePayees.some(p=>p.name===name.trim())&&(
+            <div style={{ display:'flex',alignItems:'center',gap:10,marginTop:-8 }}>
+              <span style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,flex:1 }}>Save "{name.trim()}" as a quick pick?</span>
+              <button onClick={saveNewPayee} style={{ fontFamily:'Outfit,sans-serif',fontSize:12,fontWeight:700,color:cfg.color,background:cfg.color+'18',border:`1px solid ${cfg.color}30`,borderRadius:8,padding:'5px 10px',cursor:'pointer' }}>Save</button>
             </div>
           )}
 
           <IField label="Amount (£)" value={amount} onChange={setAmount} type="number" placeholder="0.00"
-            hint={type === 'adhoc' && avgs.n > 0 ? `Your average weekly ad hoc: ${fmt(avgs.adHoc)}` : ''} />
+            hint={type==='adhoc'&&avgs.n>0?`Your average weekly ad hoc: ${fmt(avgs.adHoc)}`:''} />
 
-          {/* TYPE SELECTOR — after name/amount */}
+          {/* Type selector */}
           <div>
             <Lbl>Transaction type</Lbl>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-              {TX_TYPES.map(t => {
-                const active = type === t.v;
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10 }}>
+              {TX_TYPES.map(t=>{
+                const active=type===t.v;
                 return (
-                  <button key={t.v} onClick={() => setType(t.v)} style={{ background: active ? t.color+'18' : C.s1, border: `1.5px solid ${active ? t.color : C.border}`, borderRadius: 16, padding: '13px 10px', textAlign: 'left', cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: active ? t.color : C.dim, flexShrink: 0, boxShadow: active ? `0 0 6px ${t.color}` : 'none' }} />
-                      <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 13, color: active ? t.color : C.text }}>{t.l}</span>
+                  <button key={t.v} onClick={()=>setType(t.v)} style={{ background:active?t.color+'18':C.s1,border:`1.5px solid ${active?t.color:C.border}`,borderRadius:16,padding:'13px 10px',textAlign:'left',cursor:'pointer' }}>
+                    <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:3 }}>
+                      <div style={{ width:7,height:7,borderRadius:'50%',background:active?t.color:C.dim,flexShrink:0,boxShadow:active?`0 0 6px ${t.color}`:'none' }}/>
+                      <span style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:13,color:active?t.color:C.text }}>{t.l}</span>
                     </div>
-                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 10, color: active ? t.color+'AA' : C.muted, paddingLeft: 13 }}>{t.desc}</div>
+                    <div style={{ fontFamily:'Outfit,sans-serif',fontSize:10,color:active?t.color+'AA':C.muted,paddingLeft:13 }}>{t.desc}</div>
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {type === 'exp'    && <Notice color={C.lavender}>↩ Expenses are tracked for claims only — they don't reduce your walk-away figure.</Notice>}
-          {type === 'oneoff' && <Notice color={C.amber}>★ Counts against this week's savings but won't skew your ad hoc average.</Notice>}
+          {type==='exp'    &&<Notice color={C.lavender}>↩ Expenses are tracked for claims only — they don't reduce your walk-away figure.</Notice>}
+          {type==='oneoff' &&<Notice color={C.amber}>★ Counts against this week's savings but won't skew your ad hoc average.</Notice>}
 
-          <PBtn onClick={handle} disabled={!canAdd} color={done ? C.green : cfg.color}>
-            {done ? '✓ Added!' : `Add ${cfg.l}`}
+          <PBtn onClick={handle} disabled={!canAdd} color={done?C.green:cfg.color}>
+            {done?'✓ Added!':`Add ${cfg.l}`}
           </PBtn>
-          <GBtn onClick={() => onNav('week')} style={{ width: '100%', textAlign: 'center', padding: '12px' }}>← Back to week</GBtn>
+          <GBtn onClick={()=>onNav('week')} style={{ width:'100%',textAlign:'center',padding:'12px' }}>← Back to week</GBtn>
         </div>
       );
     };
 
     /* ══════════════════════════════════════════════ HISTORY ══ */
-    const HistoryScreen = ({ weeks, comms, txs, saveWeek }) => {
-      const [editing, setEditing] = useState(null);
+    const HistoryScreen = ({ weeks, comms, txs, saveWeek, onNav, setAddWk }) => {
+      const [editWk, setEditWk] = useState(null);
       const now = getMon();
       const allKeys = wkRange(START, now).reverse();
       const avgs = getAvgs(weeks, txs, comms);
       const allSaved = totalSaved(weeks, comms, txs);
+
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {editing && (
-            <BackfillModal weekKey={editing} existing={weeks[editing]}
-              onSave={d => { saveWeek(editing, { ...d, manual: true }); setEditing(null); }}
-              onClose={() => setEditing(null)} />
+        <div style={{ display:'flex',flexDirection:'column',gap:12 }}>
+          {editWk&&(
+            <IncomeModal weekKey={editWk} existing={weeks[editWk]}
+              onSave={d=>{ saveWeek(editWk,{...(weeks[editWk]||{}),...d}); setEditWk(null); }}
+              onClose={()=>setEditWk(null)} />
           )}
+
+          {/* Summary stats */}
           <Card>
             <Lbl>All time · from {shortLbl(START)}</Lbl>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {[{l:'Total saved',v:fmt(allSaved),c:C.green},{l:'Weeks tracked',v:`${Object.keys(weeks).length}`,c:C.text},{l:'Avg weekly saving',v:fmt(avgs.saved),c:C.text},{l:'Avg ad hoc',v:fmt(avgs.adHoc),c:C.text}].map(({l,v,c}) => (
-                <div key={l} style={{ background: C.s2, borderRadius: 13, padding: '12px 13px' }}>
-                  <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, color: C.muted, marginBottom: 4 }}>{l}</div>
-                  <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 16, color: c, fontWeight: 500 }}>{v}</div>
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10 }}>
+              {[{l:'Total saved',v:fmt(allSaved),c:C.green},{l:'Weeks tracked',v:`${Object.keys(weeks).length}`,c:C.text},{l:'Avg weekly saving',v:fmt(avgs.saved),c:C.text},{l:'Avg ad hoc',v:fmt(avgs.adHoc),c:C.text}].map(({l,v,c})=>(
+                <div key={l} style={{ background:C.s2,borderRadius:13,padding:'12px 13px' }}>
+                  <div style={{ fontFamily:'Outfit,sans-serif',fontSize:11,color:C.muted,marginBottom:4 }}>{l}</div>
+                  <div style={{ fontFamily:'DM Mono,monospace',fontSize:16,color:c,fontWeight:500 }}>{v}</div>
                 </div>
               ))}
             </div>
           </Card>
-          {allKeys.map(wk => {
-            const wd = weeks[wk]; const isCurrent = wk === now;
-            const stats = wd ? wkStats(wk, wd, comms, txs) : null;
+
+          <Notice color={C.blue} style={{ marginBottom:0 }}>
+            To add individual transactions to a past week, use <strong>+ Add</strong> on the Week screen and select the week from the dropdown.
+          </Notice>
+
+          {allKeys.map(wk=>{
+            const wd=weeks[wk]; const isCurrent=wk===now;
+            const stats=wd?wkStats(wk,wd,comms,txs):null;
+            const hasIncome=wd&&+(wd.income||0)>0;
             return (
-              <div key={wk} style={{ background: C.s1, border: `1px solid ${isCurrent ? C.pink+'45' : C.border}`, borderRadius: 16, padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-                    <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 14, color: C.text }}>{shortLbl(wk)}</span>
-                    {isCurrent && <Tag>Current</Tag>}
-                    {wd?.holiday && <Tag color={C.amber}>Holiday</Tag>}
-                    {wd?.manual && <Tag color={C.dim}>Manual</Tag>}
+              <div key={wk} style={{ background:C.s1,border:`1px solid ${isCurrent?C.pink+'45':C.border}`,borderRadius:16,padding:'14px 16px',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                <div style={{ flex:1,minWidth:0 }}>
+                  <div style={{ display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4 }}>
+                    <span style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:14,color:C.text }}>{shortLbl(wk)}</span>
+                    {isCurrent&&<Tag>Current</Tag>}
+                    {wd?.holiday&&<Tag color={C.amber}>Holiday</Tag>}
                   </div>
-                  {stats ? (
-                    <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 12, color: C.muted }}>↑{fmt(stats.income)} · ↓{fmt(stats.real)}{stats.expS > 0 ? ` · ↩${fmt(stats.expS)}` : ''}</div>
-                  ) : (
-                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.dim }}>Not entered — tap to add</div>
+                  {stats?(
+                    <div style={{ fontFamily:'DM Mono,monospace',fontSize:12,color:C.muted }}>
+                      ↑{fmt(stats.income)} · ↓{fmt(stats.real)}{stats.expS>0?` · ↩${fmt(stats.expS)}`:''}
+                      {stats.txs.length>0&&<span style={{ color:C.dim }}> · {stats.txs.length} tx</span>}
+                    </div>
+                  ):(
+                    <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.dim }}>No income entered yet</div>
                   )}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 12, flexShrink: 0 }}>
-                  {stats && (
-                    <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 18, color: stats.saved >= 0 ? C.green : C.red, fontWeight: 500, marginRight: 4 }}>{fmt(stats.saved)}</div>
-                  )}
-                  <button onClick={() => setEditing(wk)} style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, fontWeight: 700, color: stats ? C.muted : C.pink, background: stats ? C.s2 : C.pinkBg, borderRadius: 10, padding: '7px 12px', cursor: 'pointer', border: `1px solid ${stats ? C.border : C.pink+'30'}` }}>
-                    {stats ? 'Edit' : 'Add →'}
+                <div style={{ display:'flex',alignItems:'center',gap:8,marginLeft:12,flexShrink:0 }}>
+                  {stats&&<div style={{ fontFamily:'DM Mono,monospace',fontSize:18,color:stats.saved>=0?C.green:C.red,fontWeight:500 }}>{fmt(stats.saved)}</div>}
+                  <button onClick={()=>setEditWk(wk)} style={{ fontFamily:'Outfit,sans-serif',fontSize:12,fontWeight:700,color:hasIncome?C.muted:C.pink,background:hasIncome?C.s2:C.pinkBg,borderRadius:10,padding:'7px 12px',cursor:'pointer',border:`1px solid ${hasIncome?C.border:C.pink+'30'}` }}>
+                    {hasIncome?'Edit':'Set income'}
                   </button>
                 </div>
               </div>
@@ -700,33 +685,26 @@
       );
     };
 
-    const BackfillModal = ({ weekKey, existing, onSave, onClose }) => {
-      const isEdit = !!existing;
-      const [holiday, setHoliday] = useState(existing?.holiday || false);
-      const [income, setIncome] = useState(String(existing?.income || 1900));
-      const [bills, setBills] = useState(String(existing?.bills || ''));
-      const [adHoc, setAdHoc] = useState(String(existing?.adHoc || ''));
-      const [oneOff, setOneOff] = useState(String(existing?.oneOff || ''));
-      const [expS, setExpS] = useState(String(existing?.expS || ''));
+    /* Income modal — sets income + holiday only */
+    const IncomeModal = ({ weekKey, existing, onSave, onClose }) => {
+      const [holiday, setHoliday] = useState(existing?.holiday||false);
+      const [income, setIncome]   = useState(existing?.income!=null?String(existing.income):'');
       return (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(7,8,15,0.96)', backdropFilter: 'blur(8px)', zIndex: 300, overflowY: 'auto', padding: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
-          <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 24, padding: 24, width: '100%', maxWidth: 360, marginTop: 20 }}>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: 20, color: C.text, marginBottom: 2 }}>{isEdit ? 'Edit week' : 'Add week'}</div>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.muted, marginBottom: 20 }}>{wkLbl(weekKey)}</div>
-            <div onClick={() => setHoliday(!holiday)} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18, padding: '12px 14px', background: C.s2, borderRadius: 12, cursor: 'pointer', border: `1px solid ${holiday ? C.amber+'50' : C.border}` }}>
-              <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${holiday ? C.amber : C.border}`, background: holiday ? C.amber : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: '#000', flexShrink: 0 }}>{holiday && '✓'}</div>
-              <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 14, color: C.text }}>Holiday / unpaid week</span>
+        <div style={{ position:'fixed',inset:0,background:'rgba(7,8,15,0.96)',backdropFilter:'blur(8px)',zIndex:300,overflowY:'auto',padding:20,display:'flex',alignItems:'flex-start',justifyContent:'center' }}>
+          <div style={{ background:C.s1,border:`1px solid ${C.border}`,borderRadius:24,padding:24,width:'100%',maxWidth:360,marginTop:20 }}>
+            <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:800,fontSize:20,color:C.text,marginBottom:2 }}>{existing?.income!=null?'Edit week':'Set income'}</div>
+            <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.muted,marginBottom:20 }}>{wkLbl(weekKey)}</div>
+            <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,marginBottom:16,lineHeight:1.6 }}>
+              Set your income here. To add or edit individual transactions for this week, use + Add on the Week screen and pick this week from the dropdown.
             </div>
-            {!holiday && <>
-              <IField label="Income received" value={income} onChange={setIncome} type="number" placeholder="1900" />
-              <IField label="Bills paid" value={bills} onChange={setBills} type="number" placeholder="0.00" />
-              <IField label="Weekly ad hoc spend" value={adHoc} onChange={setAdHoc} type="number" placeholder="0.00" />
-              <IField label="One-off purchases" value={oneOff} onChange={setOneOff} type="number" placeholder="0.00" />
-              <IField label="Expenses (claimable)" value={expS} onChange={setExpS} type="number" placeholder="0.00" />
-            </>}
-            <div style={{ display: 'flex', gap: 10 }}>
-              <GBtn onClick={onClose} style={{ flex: 1, textAlign: 'center', padding: '13px' }}>Cancel</GBtn>
-              <PBtn onClick={() => onSave({ income: holiday?0:+income, bills:+bills, adHoc:+adHoc, oneOff:+oneOff, expS:+expS, expB:380, adHocB:+adHoc, holiday })} style={{ flex: 2 }}>Save week</PBtn>
+            <div onClick={()=>setHoliday(!holiday)} style={{ display:'flex',alignItems:'center',gap:12,marginBottom:18,padding:'12px 14px',background:C.s2,borderRadius:12,cursor:'pointer',border:`1px solid ${holiday?C.amber+'50':C.border}` }}>
+              <div style={{ width:20,height:20,borderRadius:6,border:`2px solid ${holiday?C.amber:C.border}`,background:holiday?C.amber:'transparent',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'#000',flexShrink:0 }}>{holiday&&'✓'}</div>
+              <span style={{ fontFamily:'Outfit,sans-serif',fontSize:14,color:C.text }}>Holiday / unpaid week</span>
+            </div>
+            {!holiday&&<IField label="Income received (£)" value={income} onChange={setIncome} type="number" placeholder="0.00" />}
+            <div style={{ display:'flex',gap:10 }}>
+              <GBtn onClick={onClose} style={{ flex:1,textAlign:'center',padding:'13px' }}>Cancel</GBtn>
+              <PBtn onClick={()=>onSave({income:holiday?0:+income,holiday})} style={{ flex:2 }}>Save</PBtn>
             </div>
           </div>
         </div>
@@ -735,46 +713,48 @@
 
     /* ══════════════════════════════════════════════ FORECAST ══ */
     const ForecastScreen = ({ fcA, fcB, settings, saveSettings, avgs, weeks, comms, txs }) => {
-      const [editB, setEditB] = useState(false);
-      const [endB, setEndB] = useState(settings.endB);
-      const now = getMon();
-      const weeksToA = Math.max(0, wkRange(now, settings.endA).length - 1);
-      const weeksToB = Math.max(0, wkRange(now, settings.endB).length - 1);
-      const saved = totalSaved(weeks, comms, txs);
+      const [editB,setEditB]=useState(false);
+      const [endB,setEndB]=useState(settings.endB);
+      const now=getMon();
+      const weeksToA=Math.max(0,wkRange(now,settings.endA).length-1);
+      const weeksToB=Math.max(0,wkRange(now,settings.endB).length-1);
+      const saved=totalSaved(weeks,comms,txs);
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {avgs.n === 0 && <Notice color={C.blue}>ℹ No history yet — forecasts use your settings. Add past weeks in History to improve accuracy.</Notice>}
-          {avgs.n > 0 && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.muted }}>Based on {avgs.n} week{avgs.n!==1?'s':''} · avg saving {fmt(avgs.saved)}/wk</div>}
-          <div style={{ background: 'linear-gradient(145deg,#0D0914 0%,#110A1A 100%)', border: `1px solid ${C.pink}40`, borderRadius: 24, padding: 22, position: 'relative', overflow: 'hidden' }}>
-            <div style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, background: C.pink, opacity: 0.05, borderRadius: '50%', filter: 'blur(25px)', pointerEvents: 'none' }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-              <Lbl style={{ color: C.pink+'AA', marginBottom: 0 }}>Scenario A — Fixed</Lbl>
+        <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
+          {avgs.n===0&&<Notice color={C.blue}>ℹ No history yet — forecasts use your settings. Add income for past weeks in History to improve accuracy.</Notice>}
+          {avgs.n>0&&<div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.muted }}>Based on {avgs.n} week{avgs.n!==1?'s':''} · avg saving {fmt(avgs.saved)}/wk</div>}
+
+          <div style={{ background:'linear-gradient(145deg,#0D0914 0%,#110A1A 100%)',border:`1px solid ${C.pink}40`,borderRadius:24,padding:22,position:'relative',overflow:'hidden' }}>
+            <div style={{ position:'absolute',top:-30,right:-30,width:120,height:120,background:C.pink,opacity:0.05,borderRadius:'50%',filter:'blur(25px)',pointerEvents:'none' }}/>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10 }}>
+              <Lbl style={{ color:C.pink+'AA',marginBottom:0 }}>Scenario A — Fixed</Lbl>
               <Tag>{fmtDate(settings.endA)}</Tag>
             </div>
-            <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 52, fontWeight: 500, color: C.pink, lineHeight: 1, margin: '8px 0 12px', textShadow: `0 0 30px ${C.pink}40` }}>{fmt(fcA)}</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {[{l:'Weeks remaining',v:weeksToA},{l:'Saved to date',v:fmt(saved)},{l:'Still to earn',v:fmt(Math.max(0,fcA-saved))},{l:'Avg saving/wk',v:fmt(avgs.saved)}].map(({l,v}) => (
-                <div key={l} style={{ background: 'rgba(255,31,109,0.07)', borderRadius: 12, padding: '10px 12px' }}>
-                  <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 10, color: C.muted, marginBottom: 3 }}>{l}</div>
-                  <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 15, color: C.text }}>{v}</div>
+            <div style={{ fontFamily:'DM Mono,monospace',fontSize:52,fontWeight:500,color:C.pink,lineHeight:1,margin:'8px 0 12px',textShadow:`0 0 30px ${C.pink}40` }}>{fmt(fcA)}</div>
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10 }}>
+              {[{l:'Weeks remaining',v:weeksToA},{l:'Saved to date',v:fmt(saved)},{l:'Still to earn',v:fmt(Math.max(0,fcA-saved))},{l:'Avg saving/wk',v:fmt(avgs.saved)}].map(({l,v})=>(
+                <div key={l} style={{ background:'rgba(255,31,109,0.07)',borderRadius:12,padding:'10px 12px' }}>
+                  <div style={{ fontFamily:'Outfit,sans-serif',fontSize:10,color:C.muted,marginBottom:3 }}>{l}</div>
+                  <div style={{ fontFamily:'DM Mono,monospace',fontSize:15,color:C.text }}>{v}</div>
                 </div>
               ))}
             </div>
           </div>
+
           <Card>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <Lbl style={{ marginBottom: 0 }}>Scenario B — If extended</Lbl>
-              <GBtn onClick={() => setEditB(!editB)}>{editB ? 'Done' : 'Edit date'}</GBtn>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14 }}>
+              <Lbl style={{ marginBottom:0 }}>Scenario B — If extended</Lbl>
+              <GBtn onClick={()=>setEditB(!editB)}>{editB?'Done':'Edit date'}</GBtn>
             </div>
-            {editB ? (
+            {editB?(
               <div>
                 <IField label="New end date" value={endB} onChange={setEndB} type="date" />
-                <PBtn onClick={() => { saveSettings({ ...settings, endB }); setEditB(false); }}>Update</PBtn>
+                <PBtn onClick={()=>{saveSettings({...settings,endB});setEditB(false);}}>Update</PBtn>
               </div>
-            ) : (
+            ):(
               <>
-                <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 40, fontWeight: 500, color: C.green, lineHeight: 1, marginBottom: 8 }}>{fmt(fcB)}</div>
-                <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.green, marginBottom: 16 }}>{fmt(fcB-fcA,true)} vs Scenario A</div>
+                <div style={{ fontFamily:'DM Mono,monospace',fontSize:40,fontWeight:500,color:C.green,lineHeight:1,marginBottom:8 }}>{fmt(fcB)}</div>
+                <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.green,marginBottom:16 }}>{fmt(fcB-fcA,true)} vs Scenario A</div>
                 <SRow label="End date" value={fmtDate(settings.endB)} />
                 <SRow label="Weeks remaining" value={String(weeksToB)} />
                 <SRow label="Extra weeks vs A" value={`+${weeksToB-weeksToA}`} color={C.green} />
@@ -782,13 +762,16 @@
               </>
             )}
           </Card>
-          <Card style={{ background: C.s2 }}>
+
+          <Card style={{ background:C.s2 }}>
             <Lbl>Assumptions</Lbl>
             <SRow label="Weekly income" value={fmt(settings.income)} />
             <SRow label="Avg weekly bills" value={fmt(avgs.bills)} />
             <SRow label="Avg weekly ad hoc" value={fmt(avgs.adHoc)} />
-            <SRow label="Pay lag" value={`+${settings.payLag ?? 1} week`} color={C.muted} />
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.muted, marginTop: 10, lineHeight: 1.6 }}>Holiday weeks and one-off purchases reduce the walk-away figure as they're entered. Expenses have zero impact. Pay lag extends the forecast window beyond the contract end date to capture the final pay.</div>
+            <SRow label="Pay lag" value={`+${settings.payLag??1} week`} />
+            <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,marginTop:10,lineHeight:1.6 }}>
+              Holiday weeks and one-off purchases reduce the walk-away figure as entered. Expenses have zero impact. Pay lag extends the window to capture your final pay.
+            </div>
           </Card>
         </div>
       );
@@ -796,93 +779,84 @@
 
     /* ══════════════════════════════════════════════ REGISTER ══ */
     const FREQ_OPTS = [
-      { v:'weekly',    l:'Weekly' },
-      { v:'monthly',   l:'Monthly' },
-      { v:'bimonthly', l:'Bi-monthly (every 2 months)' },
-      { v:'custom',    l:'Custom (every N days)' },
-      { v:'oneoff',    l:'One-off' },
+      {v:'weekly',    l:'Weekly'},
+      {v:'monthly',   l:'Monthly'},
+      {v:'bimonthly', l:'Bi-monthly (every 2 months)'},
+      {v:'custom',    l:'Custom (every N days)'},
+      {v:'oneoff',    l:'One-off'},
     ];
-    const CAT_OPTS = [{ v:'bill', l:'Bill' }, { v:'sub', l:'Subscription' }];
+    const CAT_OPTS = [{v:'bill',l:'Bill'},{v:'sub',l:'Subscription'}];
 
     const CommForm = ({ initial={}, onSave, onCancel, saveLabel='Add' }) => {
-      const [name, setName] = useState(initial.name||'');
-      const [amount, setAmount] = useState(String(initial.amount||''));
-      const [cat, setCat] = useState(initial.cat||'bill');
-      const [freq, setFreq] = useState(initial.freq||'monthly');
-      const [nextDue, setNextDue] = useState(initial.nextDue||'');
-      const [freqDays, setFreqDays] = useState(String(initial.freqDays||'60'));
-      const [effectiveFrom, setEffectiveFrom] = useState(initial.effectiveFrom||getMon());
-      const canSave = name && amount && nextDue;
+      const [name,setName]=useState(initial.name||'');
+      const [amount,setAmount]=useState(String(initial.amount||''));
+      const [cat,setCat]=useState(initial.cat||'bill');
+      const [freq,setFreq]=useState(initial.freq||'monthly');
+      const [nextDue,setNextDue]=useState(initial.nextDue||'');
+      const [freqDays,setFreqDays]=useState(String(initial.freqDays||'60'));
+      const [effectiveFrom,setEffectiveFrom]=useState(initial.effectiveFrom||getMon());
+      const canSave=name&&amount&&nextDue;
       return (
         <div>
           <IField label="Name" value={name} onChange={setName} placeholder="e.g. Half mortgage, Netflix" />
           <IField label="Amount (£)" value={amount} onChange={setAmount} type="number" placeholder="0.00" />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10 }}>
             <SField label="Category" value={cat} onChange={setCat} options={CAT_OPTS} />
             <SField label="Frequency" value={freq} onChange={setFreq} options={FREQ_OPTS} />
           </div>
-          {freq === 'custom' && <IField label="Cycle length (days)" value={freqDays} onChange={setFreqDays} type="number" placeholder="60" hint="e.g. 60 for every 60 days" />}
+          {freq==='custom'&&<IField label="Cycle length (days)" value={freqDays} onChange={setFreqDays} type="number" placeholder="60" hint="e.g. 60 for every 60 days" />}
           <IField label={freq==='oneoff'?'Date':'Next / most recent due date'} value={nextDue} onChange={setNextDue} type="date" />
           <IField label="Effective from (week commencing)" value={effectiveFrom} onChange={setEffectiveFrom} type="date" hint="Forecast uses this amount from this week onwards only" />
-          <div style={{ display: 'flex', gap: 10 }}>
-            <GBtn onClick={onCancel} style={{ flex: 1, textAlign: 'center', padding: '13px' }}>Cancel</GBtn>
-            <PBtn onClick={() => canSave && onSave({ name, amount:+amount, cat, freq, nextDue, freqDays:+freqDays||60, effectiveFrom })} disabled={!canSave} style={{ flex: 2 }}>{saveLabel}</PBtn>
+          <div style={{ display:'flex',gap:10 }}>
+            <GBtn onClick={onCancel} style={{ flex:1,textAlign:'center',padding:'13px' }}>Cancel</GBtn>
+            <PBtn onClick={()=>canSave&&onSave({name,amount:+amount,cat,freq,nextDue,freqDays:+freqDays||60,effectiveFrom})} disabled={!canSave} style={{ flex:2 }}>{saveLabel}</PBtn>
           </div>
         </div>
       );
     };
 
     const RegisterScreen = ({ comms, saveComms, today }) => {
-      const [adding, setAdding] = useState(false);
-      const [editing, setEditing] = useState(null);
-      const thisWkComms = commsForWk(today, comms);
-      const freqLabel = c => c.freq==='custom' ? `Every ${c.freqDays||60} days` : FREQ_OPTS.find(f=>f.v===c.freq)?.l||c.freq;
+      const [adding,setAdding]=useState(false);
+      const [editing,setEditing]=useState(null);
+      const freqLabel=c=>c.freq==='custom'?`Every ${c.freqDays||60} days`:FREQ_OPTS.find(f=>f.v===c.freq)?.l||c.freq;
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {thisWkComms.length > 0 && (
-            <Card style={{ border: `1px solid ${C.pink}30`, background: C.pinkBg }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <Lbl style={{ marginBottom: 0, color: C.pink+'BB' }}>Due this week</Lbl>
-                <Tag>{fmt(thisWkComms.reduce((s,c) => s + +c.amount, 0))}</Tag>
-              </div>
-              {thisWkComms.map(c => <SRow key={c.id} label={c.name} value={fmt(c.amount)} color={C.pink} />)}
-            </Card>
-          )}
-          {adding ? (
+        <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
+          {adding?(
             <Card>
-              <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 16, color: C.text, marginBottom: 16 }}>New commitment</div>
-              <CommForm onSave={d => { saveComms([...comms, { id:Date.now(), ...d }]); setAdding(false); }} onCancel={() => setAdding(false)} />
+              <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:16,color:C.text,marginBottom:16 }}>New commitment</div>
+              <CommForm onSave={d=>{saveComms([...comms,{id:Date.now(),...d}]);setAdding(false);}} onCancel={()=>setAdding(false)} />
             </Card>
-          ) : <PBtn onClick={() => setAdding(true)}>+ Add commitment</PBtn>}
-          {comms.length === 0 && !adding ? (
-            <Card style={{ textAlign: 'center', padding: '30px 20px' }}>
-              <div style={{ fontSize: 28, marginBottom: 10 }}>📋</div>
-              <div style={{ fontFamily: 'Outfit, sans-serif', color: C.muted }}>No commitments yet</div>
-              <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.dim, marginTop: 5 }}>Add your bills and subscriptions</div>
+          ):<PBtn onClick={()=>setAdding(true)}>+ Add commitment</PBtn>}
+
+          {comms.length===0&&!adding?(
+            <Card style={{ textAlign:'center',padding:'30px 20px' }}>
+              <div style={{ fontSize:28,marginBottom:10 }}>📋</div>
+              <div style={{ fontFamily:'Outfit,sans-serif',color:C.muted }}>No commitments yet</div>
+              <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.dim,marginTop:5 }}>Add your bills and subscriptions</div>
             </Card>
-          ) : comms.map(c => {
-            if (editing === c.id) return (
-              <Card key={c.id} style={{ border: `1px solid ${C.blue}40` }}>
-                <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 12 }}>Edit · {c.name}</div>
-                <Notice color={C.blue}>Changing the amount here only affects the forecast and future weeks. Past weeks you've already entered won't change.</Notice>
+          ):comms.map(c=>{
+            if(editing===c.id) return (
+              <Card key={c.id} style={{ border:`1px solid ${C.blue}40` }}>
+                <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:15,color:C.text,marginBottom:12 }}>Edit · {c.name}</div>
+                <Notice color={C.blue}>Changes only affect the forecast and future weeks. Past weeks you've entered won't change.</Notice>
                 <CommForm initial={c} saveLabel="Save changes"
-                  onSave={d => { saveComms(comms.map(x => x.id===c.id ? {...x,...d} : x)); setEditing(null); }}
-                  onCancel={() => setEditing(null)} />
+                  onSave={d=>{saveComms(comms.map(x=>x.id===c.id?{...x,...d}:x));setEditing(null);}}
+                  onCancel={()=>setEditing(null)} />
               </Card>
             );
             return (
-              <div key={c.id} style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 16, padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 14, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</div>
-                  <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.muted, marginTop: 3 }}>
-                    {freqLabel(c)}{c.nextDue ? ` · next ${shortLbl(c.nextDue)}` : ''}
-                    {c.effectiveFrom && c.effectiveFrom > START ? ` · from ${shortLbl(c.effectiveFrom)}` : ''}
+              <div key={c.id} style={{ background:C.s1,border:`1px solid ${C.border}`,borderRadius:16,padding:'14px 16px',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                <div style={{ flex:1,minWidth:0 }}>
+                  <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:14,color:C.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{c.name}</div>
+                  <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,marginTop:3 }}>
+                    {freqLabel(c)}{c.nextDue?` · next ${shortLbl(c.nextDue)}`:''}
+                    {c.effectiveFrom&&c.effectiveFrom>START?` · from ${shortLbl(c.effectiveFrom)}`:''}
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                  <span style={{ fontFamily: 'DM Mono, monospace', fontSize: 15, color: C.blue, fontWeight: 500 }}>{fmt(c.amount)}</span>
-                  <button onClick={() => setEditing(c.id)} style={{ color: C.muted, fontSize: 12, cursor: 'pointer', padding: '5px 8px', borderRadius: 8, background: C.s2, border: `1px solid ${C.border}`, fontFamily: 'Outfit, sans-serif', fontWeight: 600 }}>Edit</button>
-                  <button onClick={() => saveComms(comms.filter(x => x.id !== c.id))} style={{ color: C.dim, fontSize: 13, cursor: 'pointer', padding: '5px 7px', borderRadius: 8, background: C.s2, border: `1px solid ${C.border}` }}>✕</button>
+                <div style={{ display:'flex',alignItems:'center',gap:8,flexShrink:0 }}>
+                  <span style={{ fontFamily:'DM Mono,monospace',fontSize:15,color:C.blue,fontWeight:500 }}>{fmt(c.amount)}</span>
+                  <button onClick={()=>setEditing(c.id)} style={{ color:C.muted,fontSize:12,cursor:'pointer',padding:'5px 8px',borderRadius:8,background:C.s2,border:`1px solid ${C.border}`,fontFamily:'Outfit,sans-serif',fontWeight:600 }}>Edit</button>
+                  <button onClick={()=>saveComms(comms.filter(x=>x.id!==c.id))} style={{ color:C.dim,fontSize:13,cursor:'pointer',padding:'5px 7px',borderRadius:8,background:C.s2,border:`1px solid ${C.border}` }}>✕</button>
                 </div>
               </div>
             );
@@ -893,82 +867,70 @@
 
     /* ══════════════════════════════════════════════ SETTINGS ══ */
     const SettingsScreen = ({ settings, saveSettings, payees, savePayees, weeks, txs, comms, onImport }) => {
-      const [income, setIncome] = useState(String(settings.income));
-      const [expB, setExpB] = useState(String(settings.expB));
-      const [adHocB, setAdHocB] = useState(String(settings.adHocB));
-      const [endA, setEndA] = useState(settings.endA);
-      const [endB, setEndB] = useState(settings.endB);
-      const [payLag, setPayLag] = useState(String(settings.payLag ?? 1));
-      const [saved, setSaved] = useState(false);
-      const [importErr, setImportErr] = useState('');
-      const [importOk, setImportOk] = useState(false);
+      const [income,setIncome]=useState(String(settings.income));
+      const [expB,setExpB]=useState(String(settings.expB));
+      const [adHocB,setAdHocB]=useState(String(settings.adHocB));
+      const [endA,setEndA]=useState(settings.endA);
+      const [endB,setEndB]=useState(settings.endB);
+      const [payLag,setPayLag]=useState(String(settings.payLag??1));
+      const [saved,setSaved]=useState(false);
+      const [importErr,setImportErr]=useState('');
+      const [importOk,setImportOk]=useState(false);
 
-      const save = () => {
-        saveSettings({ ...settings, income:+income, expB:+expB, adHocB:+adHocB, endA, endB, payLag:+payLag||1 });
-        setSaved(true); setTimeout(() => setSaved(false), 1600);
-      };
+      const save=()=>{ saveSettings({...settings,income:+income,expB:+expB,adHocB:+adHocB,endA,endB,payLag:+payLag||1}); setSaved(true); setTimeout(()=>setSaved(false),1600); };
 
-      const doExport = () => {
-        const data = { v: 1, exported: new Date().toISOString(), settings, weeks, txs, comms, payees };
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `finance-tracker-${new Date().toISOString().slice(0,10)}.json`;
-        a.click();
+      const doExport=()=>{
+        const data={v:3,exported:new Date().toISOString(),settings,weeks,txs,comms,payees};
+        const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement('a'); a.href=url; a.download=`finance-tracker-${new Date().toISOString().slice(0,10)}.json`; a.click();
         URL.revokeObjectURL(url);
       };
 
-      const doImport = (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
+      const doImport=e=>{
+        const file=e.target.files[0]; if(!file) return;
+        const reader=new FileReader();
+        reader.onload=ev=>{
           try {
-            const data = JSON.parse(ev.target.result);
-            if (!data.settings || !data.weeks) throw new Error('Invalid file');
-            onImport(data);
-            setImportOk(true);
-            setImportErr('');
-            setTimeout(() => setImportOk(false), 2500);
-          } catch {
-            setImportErr('Could not read that file — make sure it\'s a Finance Tracker export.');
-          }
+            const data=JSON.parse(ev.target.result);
+            if(!data.settings||!data.weeks) throw new Error('Invalid');
+            onImport(data); setImportOk(true); setImportErr('');
+            setTimeout(()=>setImportOk(false),2500);
+          } catch { setImportErr("Could not read that file — make sure it's a Finance Tracker export."); }
         };
-        reader.readAsText(file);
-        e.target.value = '';
+        reader.readAsText(file); e.target.value='';
       };
 
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display:'flex',flexDirection:'column',gap:16 }}>
           <Card>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 16 }}>Weekly defaults</div>
+            <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:15,color:C.text,marginBottom:16 }}>Weekly defaults</div>
             <IField label="Net weekly income" value={income} onChange={setIncome} type="number" />
-            <IField label="Expenses budget per week" value={expB} onChange={setExpB} type="number" />
+            <IField label="Expenses budget per week" value={expB} onChange={setExpB} type="number" hint="Amount you set aside for claimable expenses each week" />
             <IField label="Default weekly ad hoc budget" value={adHocB} onChange={setAdHocB} type="number" hint="Used until your average is established" />
           </Card>
           <Card>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 16 }}>Contract dates</div>
+            <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:15,color:C.text,marginBottom:16 }}>Contract dates</div>
             <IField label="Scenario A — fixed end date" value={endA} onChange={setEndA} type="date" />
             <IField label="Scenario B — flexible end date" value={endB} onChange={setEndB} type="date" />
-            <IField label="Pay lag (weeks after contract end)" value={payLag} onChange={setPayLag} type="number" hint="Your final pay arrives this many weeks after your contract end date. Default: 1." />
+            <IField label="Pay lag (weeks)" value={payLag} onChange={setPayLag} type="number" hint="Weeks between contract end and final pay. Default: 1." />
           </Card>
-          {payees.length > 0 && (
+          {payees.length>0&&(
             <Card>
-              <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 4 }}>Saved payees</div>
-              <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.muted, marginBottom: 14 }}>Remove any you no longer need.</div>
-              {['bill','adhoc','oneoff','exp'].map(type => {
-                const group = payees.filter(p => p.type === type); if (!group.length) return null;
-                const labels = { bill:'Bill', adhoc:'Ad Hoc', oneoff:'One-Off', exp:'Expenses' };
-                const colors = { bill:C.blue, adhoc:C.green, oneoff:C.amber, exp:C.lavender };
+              <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:15,color:C.text,marginBottom:4 }}>Saved payees</div>
+              <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,marginBottom:14 }}>Remove any you no longer need.</div>
+              {['adhoc','oneoff','exp'].map(type=>{
+                const group=payees.filter(p=>p.type===type); if(!group.length) return null;
+                const labels={adhoc:'Ad Hoc',oneoff:'One-Off',exp:'Expenses'};
+                const colors={adhoc:C.green,oneoff:C.amber,exp:C.lavender};
                 return (
-                  <div key={type} style={{ marginBottom: 12 }}>
-                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, fontWeight: 700, color: colors[type], letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 8 }}>{labels[type]}</div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {group.map(p => (
-                        <div key={p.id} style={{ display: 'flex', alignItems: 'center', background: C.s2, border: `1px solid ${C.border}`, borderRadius: 100, overflow: 'hidden' }}>
-                          <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.text, padding: '6px 10px 6px 14px' }}>{p.name}</span>
-                          <button onClick={() => savePayees(payees.filter(x => x.id !== p.id))} style={{ color: C.dim, fontSize: 11, padding: '6px 10px 6px 2px', cursor: 'pointer', background: 'none' }}>✕</button>
+                  <div key={type} style={{ marginBottom:12 }}>
+                    <div style={{ fontFamily:'Outfit,sans-serif',fontSize:11,fontWeight:700,color:colors[type],letterSpacing:1.2,textTransform:'uppercase',marginBottom:8 }}>{labels[type]}</div>
+                    <div style={{ display:'flex',flexWrap:'wrap',gap:8 }}>
+                      {group.map(p=>(
+                        <div key={p.id} style={{ display:'flex',alignItems:'center',background:C.s2,border:`1px solid ${C.border}`,borderRadius:100,overflow:'hidden' }}>
+                          <span style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.text,padding:'6px 10px 6px 14px' }}>{p.name}</span>
+                          <button onClick={()=>savePayees(payees.filter(x=>x.id!==p.id))} style={{ color:C.dim,fontSize:11,padding:'6px 10px 6px 2px',cursor:'pointer',background:'none' }}>✕</button>
                         </div>
                       ))}
                     </div>
@@ -977,37 +939,31 @@
               })}
             </Card>
           )}
-
-          <PBtn onClick={save} color={saved ? C.green : C.pink}>{saved ? '✓ Saved' : 'Save settings'}</PBtn>
-
-          {/* Export / Import */}
+          <PBtn onClick={save} color={saved?C.green:C.pink}>{saved?'✓ Saved':'Save settings'}</PBtn>
           <Card>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 6 }}>Backup &amp; restore</div>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
-              Export saves everything — weeks, transactions, bills, settings — to a JSON file. Import that file on any device to restore.
+            <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:15,color:C.text,marginBottom:6 }}>Backup &amp; restore</div>
+            <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,marginBottom:16,lineHeight:1.6 }}>
+              Export saves everything to a JSON file. Import that file on any device to restore all your data.
             </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <PBtn onClick={doExport} color={C.green} style={{ flex: 1, fontSize: 14 }}>↓ Export</PBtn>
-              <label style={{ flex: 1 }}>
-                <div style={{ width: '100%', background: importOk ? C.green : C.s2, color: importOk ? '#fff' : C.muted, fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 14, borderRadius: 14, padding: '15px', border: `1px solid ${C.border}`, cursor: 'pointer', textAlign: 'center' }}>
-                  {importOk ? '✓ Imported!' : '↑ Import'}
+            <div style={{ display:'flex',gap:10 }}>
+              <PBtn onClick={doExport} color={C.green} style={{ flex:1,fontSize:14 }}>↓ Export</PBtn>
+              <label style={{ flex:1 }}>
+                <div style={{ width:'100%',background:importOk?C.green:C.s2,color:importOk?'#fff':C.muted,fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:14,borderRadius:14,padding:'15px',border:`1px solid ${C.border}`,cursor:'pointer',textAlign:'center' }}>
+                  {importOk?'✓ Imported!':'↑ Import'}
                 </div>
-                <input type="file" accept=".json" onChange={doImport} style={{ display: 'none' }} />
+                <input type="file" accept=".json" onChange={doImport} style={{ display:'none' }} />
               </label>
             </div>
-            {importErr && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.red, marginTop: 10 }}>{importErr}</div>}
+            {importErr&&<div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.red,marginTop:10 }}>{importErr}</div>}
           </Card>
-
-          <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.dim, textAlign: 'center', lineHeight: 1.7 }}>
-            v2.2 · Data stored locally in this browser<br />Start date: 16 February 2026
+          <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.dim,textAlign:'center',lineHeight:1.7 }}>
+            v3.0 · Data stored locally in this browser<br />Start date: 16 February 2026
           </div>
         </div>
       );
     };
 
-    /* ══════════════════════════════════════════════
-       MOUNT
-    ══════════════════════════════════════════════ */
+    /* ══════════════════════════════════════════════ MOUNT ══ */
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
   </script>
