@@ -266,12 +266,25 @@
       const toggleClaim = id => { const u = txs.map(t => t.id === id ? { ...t, claimed: !t.claimed } : t); setTxs(u); persist('txs', u); };
       const savePayees = p => { setPayees(p); persist('payees', p); };
 
+      const onImport = data => {
+        const s = { ...DEF_SETTINGS, ...data.settings };
+        const c = data.comms || [];
+        const w = data.weeks || {};
+        const t = data.txs || [];
+        const p = data.payees || [];
+        setSettings(s); persist('settings', s);
+        setComms(c);    persist('comms', c);
+        setWeeks(w);    persist('weeks', w);
+        setTxs(t);      persist('txs', t);
+        setPayees(p);   persist('payees', p);
+      };
+
       const thisWD = { ...DEF_SETTINGS, ...(weeks[today] || {}), income: settings.income, expB: settings.expB, adHocB: settings.adHocB, ...(weeks[today] || {}) };
       const thisStats = wkStats(today, thisWD, comms, txs);
       const avgs = getAvgs(weeks, txs, comms);
       const fcA = calcForecast(settings.endA, settings, weeks, comms, txs);
       const fcB = calcForecast(settings.endB, settings, weeks, comms, txs);
-      const p = { screen, onNav: setScreen, settings, saveSettings, comms, saveComms, weeks, saveWeek, txs, addTx, delTx, toggleClaim, today, thisWD, thisStats, avgs, fcA, fcB, payees, savePayees };
+      const p = { screen, onNav: setScreen, settings, saveSettings, comms, saveComms, weeks, saveWeek, txs, addTx, delTx, toggleClaim, today, thisWD, thisStats, avgs, fcA, fcB, payees, savePayees, onImport };
 
       return (
         <div style={{ minHeight: '100dvh', background: C.bg, color: C.text, display: 'flex', flexDirection: 'column', maxWidth: 430, margin: '0 auto' }}>
@@ -526,7 +539,6 @@
 
     /* ══════════════════════════════════════════════ ADD ══ */
     const TX_TYPES = [
-      { v:'bill',   l:'Bill',     desc:'Known commitment',              color: C.blue },
       { v:'adhoc',  l:'Ad Hoc',   desc:'Regular everyday spend',        color: C.green },
       { v:'oneoff', l:'One-Off',  desc:'Excluded from your averages',   color: C.amber },
       { v:'exp',    l:'Expenses', desc:'Claimable · no savings impact', color: C.lavender },
@@ -536,14 +548,18 @@
       const [type, setType] = useState('adhoc');
       const [name, setName] = useState('');
       const [amount, setAmount] = useState('');
+      const [wk, setWk] = useState(today);
       const [done, setDone] = useState(false);
       const cfg = TX_TYPES.find(t => t.v === type);
       const canAdd = name.trim() && amount;
       const typePayees = payees.filter(p => p.type === type);
 
+      // All weeks from start up to and including current week
+      const allWks = wkRange(START, today).reverse();
+
       const handle = () => {
         if (!canAdd) return;
-        addTx({ wk: today, type, name: name.trim(), amount: +amount, date: new Date().toISOString().slice(0,10) });
+        addTx({ wk, type, name: name.trim(), amount: +amount, date: new Date().toISOString().slice(0,10) });
         setDone(true); setName(''); setAmount('');
         setTimeout(() => setDone(false), 1600);
       };
@@ -556,6 +572,18 @@
 
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+          {/* Week selector */}
+          <div>
+            <Lbl>Week</Lbl>
+            <select value={wk} onChange={e => setWk(e.target.value)}
+              style={{ width: '100%', background: C.bg, border: `1px solid ${wk === today ? C.border : C.pink}`, borderRadius: 12, padding: '13px 16px', color: wk === today ? C.text : C.pink, fontFamily: 'Outfit, sans-serif', fontSize: 15 }}>
+              {allWks.map(w => (
+                <option key={w} value={w}>{wkLbl(w)}{w === today ? ' (current)' : ''}</option>
+              ))}
+            </select>
+            {wk !== today && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.pink, marginTop: 5 }}>Adding to a past week</div>}
+          </div>
 
           {/* Quick-pick payees */}
           {typePayees.length > 0 && (
@@ -587,16 +615,16 @@
           {/* TYPE SELECTOR — after name/amount */}
           <div>
             <Lbl>Transaction type</Lbl>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
               {TX_TYPES.map(t => {
                 const active = type === t.v;
                 return (
-                  <button key={t.v} onClick={() => setType(t.v)} style={{ background: active ? t.color+'18' : C.s1, border: `1.5px solid ${active ? t.color : C.border}`, borderRadius: 16, padding: '13px 12px', textAlign: 'left', cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
-                      <div style={{ width: 8, height: 8, borderRadius: '50%', background: active ? t.color : C.dim, flexShrink: 0, boxShadow: active ? `0 0 6px ${t.color}` : 'none' }} />
-                      <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 14, color: active ? t.color : C.text }}>{t.l}</span>
+                  <button key={t.v} onClick={() => setType(t.v)} style={{ background: active ? t.color+'18' : C.s1, border: `1.5px solid ${active ? t.color : C.border}`, borderRadius: 16, padding: '13px 10px', textAlign: 'left', cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: active ? t.color : C.dim, flexShrink: 0, boxShadow: active ? `0 0 6px ${t.color}` : 'none' }} />
+                      <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 13, color: active ? t.color : C.text }}>{t.l}</span>
                     </div>
-                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, color: active ? t.color+'AA' : C.muted, paddingLeft: 15 }}>{t.desc}</div>
+                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 10, color: active ? t.color+'AA' : C.muted, paddingLeft: 13 }}>{t.desc}</div>
                   </button>
                 );
               })}
@@ -616,17 +644,17 @@
 
     /* ══════════════════════════════════════════════ HISTORY ══ */
     const HistoryScreen = ({ weeks, comms, txs, saveWeek }) => {
-      const [backfilling, setBackfilling] = useState(null);
+      const [editing, setEditing] = useState(null);
       const now = getMon();
       const allKeys = wkRange(START, now).reverse();
       const avgs = getAvgs(weeks, txs, comms);
       const allSaved = totalSaved(weeks, comms, txs);
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {backfilling && (
-            <BackfillModal weekKey={backfilling} existing={weeks[backfilling]}
-              onSave={d => { saveWeek(backfilling, { ...d, manual: true }); setBackfilling(null); }}
-              onClose={() => setBackfilling(null)} />
+          {editing && (
+            <BackfillModal weekKey={editing} existing={weeks[editing]}
+              onSave={d => { saveWeek(editing, { ...d, manual: true }); setEditing(null); }}
+              onClose={() => setEditing(null)} />
           )}
           <Card>
             <Lbl>All time · from {shortLbl(START)}</Lbl>
@@ -654,15 +682,16 @@
                   {stats ? (
                     <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 12, color: C.muted }}>↑{fmt(stats.income)} · ↓{fmt(stats.real)}{stats.expS > 0 ? ` · ↩${fmt(stats.expS)}` : ''}</div>
                   ) : (
-                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.dim }}>Not entered — tap to backfill</div>
+                    <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.dim }}>Not entered — tap to add</div>
                   )}
                 </div>
-                <div style={{ textAlign: 'right', marginLeft: 12, flexShrink: 0 }}>
-                  {stats ? (
-                    <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 18, color: stats.saved >= 0 ? C.green : C.red, fontWeight: 500 }}>{fmt(stats.saved)}</div>
-                  ) : (
-                    <button onClick={() => setBackfilling(wk)} style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, fontWeight: 700, color: C.pink, background: C.pinkBg, borderRadius: 10, padding: '7px 12px', cursor: 'pointer', border: `1px solid ${C.pink}30` }}>Add →</button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 12, flexShrink: 0 }}>
+                  {stats && (
+                    <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 18, color: stats.saved >= 0 ? C.green : C.red, fontWeight: 500, marginRight: 4 }}>{fmt(stats.saved)}</div>
                   )}
+                  <button onClick={() => setEditing(wk)} style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, fontWeight: 700, color: stats ? C.muted : C.pink, background: stats ? C.s2 : C.pinkBg, borderRadius: 10, padding: '7px 12px', cursor: 'pointer', border: `1px solid ${stats ? C.border : C.pink+'30'}` }}>
+                    {stats ? 'Edit' : 'Add →'}
+                  </button>
                 </div>
               </div>
             );
@@ -672,6 +701,7 @@
     };
 
     const BackfillModal = ({ weekKey, existing, onSave, onClose }) => {
+      const isEdit = !!existing;
       const [holiday, setHoliday] = useState(existing?.holiday || false);
       const [income, setIncome] = useState(String(existing?.income || 1900));
       const [bills, setBills] = useState(String(existing?.bills || ''));
@@ -681,7 +711,7 @@
       return (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(7,8,15,0.96)', backdropFilter: 'blur(8px)', zIndex: 300, overflowY: 'auto', padding: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>
           <div style={{ background: C.s1, border: `1px solid ${C.border}`, borderRadius: 24, padding: 24, width: '100%', maxWidth: 360, marginTop: 20 }}>
-            <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: 20, color: C.text, marginBottom: 2 }}>Backfill</div>
+            <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 800, fontSize: 20, color: C.text, marginBottom: 2 }}>{isEdit ? 'Edit week' : 'Add week'}</div>
             <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 13, color: C.muted, marginBottom: 20 }}>{wkLbl(weekKey)}</div>
             <div onClick={() => setHoliday(!holiday)} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18, padding: '12px 14px', background: C.s2, borderRadius: 12, cursor: 'pointer', border: `1px solid ${holiday ? C.amber+'50' : C.border}` }}>
               <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${holiday ? C.amber : C.border}`, background: holiday ? C.amber : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: '#000', flexShrink: 0 }}>{holiday && '✓'}</div>
@@ -862,7 +892,7 @@
     };
 
     /* ══════════════════════════════════════════════ SETTINGS ══ */
-    const SettingsScreen = ({ settings, saveSettings, payees, savePayees }) => {
+    const SettingsScreen = ({ settings, saveSettings, payees, savePayees, weeks, txs, comms, onImport }) => {
       const [income, setIncome] = useState(String(settings.income));
       const [expB, setExpB] = useState(String(settings.expB));
       const [adHocB, setAdHocB] = useState(String(settings.adHocB));
@@ -870,7 +900,45 @@
       const [endB, setEndB] = useState(settings.endB);
       const [payLag, setPayLag] = useState(String(settings.payLag ?? 1));
       const [saved, setSaved] = useState(false);
-      const save = () => { saveSettings({ ...settings, income:+income, expB:+expB, adHocB:+adHocB, endA, endB, payLag:+payLag||1 }); setSaved(true); setTimeout(() => setSaved(false), 1600); };
+      const [importErr, setImportErr] = useState('');
+      const [importOk, setImportOk] = useState(false);
+
+      const save = () => {
+        saveSettings({ ...settings, income:+income, expB:+expB, adHocB:+adHocB, endA, endB, payLag:+payLag||1 });
+        setSaved(true); setTimeout(() => setSaved(false), 1600);
+      };
+
+      const doExport = () => {
+        const data = { v: 1, exported: new Date().toISOString(), settings, weeks, txs, comms, payees };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `finance-tracker-${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const doImport = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const data = JSON.parse(ev.target.result);
+            if (!data.settings || !data.weeks) throw new Error('Invalid file');
+            onImport(data);
+            setImportOk(true);
+            setImportErr('');
+            setTimeout(() => setImportOk(false), 2500);
+          } catch {
+            setImportErr('Could not read that file — make sure it\'s a Finance Tracker export.');
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = '';
+      };
+
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Card>
@@ -909,9 +977,29 @@
               })}
             </Card>
           )}
+
           <PBtn onClick={save} color={saved ? C.green : C.pink}>{saved ? '✓ Saved' : 'Save settings'}</PBtn>
+
+          {/* Export / Import */}
+          <Card>
+            <div style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 6 }}>Backup &amp; restore</div>
+            <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.muted, marginBottom: 16, lineHeight: 1.6 }}>
+              Export saves everything — weeks, transactions, bills, settings — to a JSON file. Import that file on any device to restore.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <PBtn onClick={doExport} color={C.green} style={{ flex: 1, fontSize: 14 }}>↓ Export</PBtn>
+              <label style={{ flex: 1 }}>
+                <div style={{ width: '100%', background: importOk ? C.green : C.s2, color: importOk ? '#fff' : C.muted, fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 14, borderRadius: 14, padding: '15px', border: `1px solid ${C.border}`, cursor: 'pointer', textAlign: 'center' }}>
+                  {importOk ? '✓ Imported!' : '↑ Import'}
+                </div>
+                <input type="file" accept=".json" onChange={doImport} style={{ display: 'none' }} />
+              </label>
+            </div>
+            {importErr && <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.red, marginTop: 10 }}>{importErr}</div>}
+          </Card>
+
           <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: 12, color: C.dim, textAlign: 'center', lineHeight: 1.7 }}>
-            v2.1 · Data stored locally in this browser<br />Start date: 16 February 2026
+            v2.2 · Data stored locally in this browser<br />Start date: 16 February 2026
           </div>
         </div>
       );
