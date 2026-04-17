@@ -77,32 +77,56 @@
 
     /* ══════════════════════════════════════════════
        COMMITMENTS LOGIC
+       Each commitment stores amounts as an array:
+       amounts: [{ amount, from }] sorted by from asc.
+       getAmountForWk returns the correct amount for a
+       given week, or null if not yet effective.
     ══════════════════════════════════════════════ */
+
+    // Migrate legacy flat-amount commitments to amounts array
+    const migrateComm = c => {
+      if (c.amounts) return c;
+      return { ...c, amounts: [{ amount: +c.amount, from: c.effectiveFrom || c.nextDue || START }] };
+    };
+
+    const getAmountForWk = (c, wk) => {
+      const hist = (c.amounts || []).filter(a => a.from <= wk).sort((a,b) => b.from.localeCompare(a.from));
+      return hist.length ? +hist[0].amount : null;
+    };
+
+    const currentAmount = c => {
+      const now = getMon();
+      const hist = (c.amounts || []).filter(a => a.from <= now).sort((a,b) => b.from.localeCompare(a.from));
+      return hist.length ? +hist[0].amount : (c.amounts?.[0] ? +c.amounts[0].amount : 0);
+    };
+
     const commsForWk = (wk, comms) => {
       const r = [];
-      for (const c of comms) {
-        if (!c.nextDue) continue;
-        if (c.effectiveFrom && c.effectiveFrom > wk) continue;
-        if (c.freq === 'weekly') { r.push(c); continue; }
-        if (c.freq === 'monthly') {
-          const dd = toD(c.nextDue).getDate();
-          for (let i = 0; i <= 6; i++) if (toD(addD(wk, i)).getDate() === dd) { r.push(c); break; }
-          continue;
+      for (const mc of comms.map(migrateComm)) {
+        if (!mc.nextDue) continue;
+        const amount = getAmountForWk(mc, wk);
+        if (amount === null) continue; // not yet effective
+
+        let falls = false;
+        if (mc.freq === 'weekly') { falls = true; }
+        else if (mc.freq === 'monthly') {
+          const dd = toD(mc.nextDue).getDate();
+          for (let i = 0; i <= 6; i++) if (toD(addD(wk, i)).getDate() === dd) { falls = true; break; }
         }
-        if (c.freq === 'bimonthly') {
-          let ch = c.nextDue; const wkEnd = addD(wk, 6);
+        else if (mc.freq === 'bimonthly') {
+          let ch = mc.nextDue; const wkEnd = addD(wk, 6);
           while (ch > wkEnd) { const d = toD(ch); ch = new Date(d.getFullYear(), d.getMonth()-2, d.getDate()).toISOString().slice(0,10); }
-          while (ch <= wkEnd) { if (inWk(ch, wk)) { r.push(c); break; } const d = toD(ch); ch = new Date(d.getFullYear(), d.getMonth()+2, d.getDate()).toISOString().slice(0,10); }
-          continue;
+          while (ch <= wkEnd) { if (inWk(ch, wk)) { falls = true; break; } const d = toD(ch); ch = new Date(d.getFullYear(), d.getMonth()+2, d.getDate()).toISOString().slice(0,10); }
         }
-        if (c.freq === 'custom') {
-          const days = Math.max(1, +(c.freqDays || 30));
-          let ch = c.nextDue; const wkEnd = addD(wk, 6);
+        else if (mc.freq === 'custom') {
+          const days = Math.max(1, +(mc.freqDays || 30));
+          let ch = mc.nextDue; const wkEnd = addD(wk, 6);
           while (ch > wkEnd) ch = addD(ch, -days);
-          while (ch <= wkEnd) { if (inWk(ch, wk)) { r.push(c); break; } ch = addD(ch, days); }
-          continue;
+          while (ch <= wkEnd) { if (inWk(ch, wk)) { falls = true; break; } ch = addD(ch, days); }
         }
-        if (c.freq === 'oneoff' && inWk(c.nextDue, wk)) r.push(c);
+        else if (mc.freq === 'oneoff') { falls = inWk(mc.nextDue, wk); }
+
+        if (falls) r.push({ ...mc, amount }); // resolved amount for this week
       }
       return r;
     };
@@ -787,29 +811,80 @@
     ];
     const CAT_OPTS = [{v:'bill',l:'Bill'},{v:'sub',l:'Subscription'}];
 
-    const CommForm = ({ initial={}, onSave, onCancel, saveLabel='Add' }) => {
-      const [name,setName]=useState(initial.name||'');
-      const [amount,setAmount]=useState(String(initial.amount||''));
-      const [cat,setCat]=useState(initial.cat||'bill');
-      const [freq,setFreq]=useState(initial.freq||'monthly');
-      const [nextDue,setNextDue]=useState(initial.nextDue||'');
-      const [freqDays,setFreqDays]=useState(String(initial.freqDays||'60'));
-      const [effectiveFrom,setEffectiveFrom]=useState(initial.effectiveFrom||getMon());
-      const canSave=name&&amount&&nextDue;
+    /* Form for adding a new commitment */
+    const AddCommForm = ({ onSave, onCancel }) => {
+      const [name,setName]=useState('');
+      const [amount,setAmount]=useState('');
+      const [cat,setCat]=useState('bill');
+      const [freq,setFreq]=useState('monthly');
+      const [nextDue,setNextDue]=useState('');
+      const [freqDays,setFreqDays]=useState('60');
+      // effectiveFrom defaults to the Monday of the nextDue week when nextDue is set
+      const [effectiveFrom,setEffectiveFrom]=useState('');
+      const canSave=name&&amount&&nextDue&&effectiveFrom;
+      const handleNextDue=v=>{ setNextDue(v); if(v&&!effectiveFrom) setEffectiveFrom(getMon(v)); };
       return (
         <div>
           <IField label="Name" value={name} onChange={setName} placeholder="e.g. Half mortgage, Netflix" />
-          <IField label="Amount (£)" value={amount} onChange={setAmount} type="number" placeholder="0.00" />
+          <IField label="Initial amount (£)" value={amount} onChange={setAmount} type="number" placeholder="0.00" />
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10 }}>
             <SField label="Category" value={cat} onChange={setCat} options={CAT_OPTS} />
             <SField label="Frequency" value={freq} onChange={setFreq} options={FREQ_OPTS} />
           </div>
           {freq==='custom'&&<IField label="Cycle length (days)" value={freqDays} onChange={setFreqDays} type="number" placeholder="60" hint="e.g. 60 for every 60 days" />}
-          <IField label={freq==='oneoff'?'Date':'Next / most recent due date'} value={nextDue} onChange={setNextDue} type="date" />
-          <IField label="Effective from (week commencing)" value={effectiveFrom} onChange={setEffectiveFrom} type="date" hint="Forecast uses this amount from this week onwards only" />
+          <IField label={freq==='oneoff'?'Payment date':'First / reference payment date'} value={nextDue} onChange={handleNextDue} type="date"
+            hint="Set this to your first ever payment date and the app will calculate every occurrence from there" />
+          <IField label="Amount effective from (week commencing)" value={effectiveFrom} onChange={setEffectiveFrom} type="date"
+            hint="Usually the Monday of the week your first payment fell in" />
           <div style={{ display:'flex',gap:10 }}>
             <GBtn onClick={onCancel} style={{ flex:1,textAlign:'center',padding:'13px' }}>Cancel</GBtn>
-            <PBtn onClick={()=>canSave&&onSave({name,amount:+amount,cat,freq,nextDue,freqDays:+freqDays||60,effectiveFrom})} disabled={!canSave} style={{ flex:2 }}>{saveLabel}</PBtn>
+            <PBtn onClick={()=>canSave&&onSave({
+              name, cat, freq, nextDue, freqDays:+freqDays||60,
+              amounts:[{amount:+amount, from:effectiveFrom}]
+            })} disabled={!canSave} style={{ flex:2 }}>Add commitment</PBtn>
+          </div>
+        </div>
+      );
+    };
+
+    /* Form for editing commitment details (not amount) */
+    const EditCommForm = ({ initial, onSave, onCancel }) => {
+      const [name,setName]=useState(initial.name||'');
+      const [cat,setCat]=useState(initial.cat||'bill');
+      const [freq,setFreq]=useState(initial.freq||'monthly');
+      const [nextDue,setNextDue]=useState(initial.nextDue||'');
+      const [freqDays,setFreqDays]=useState(String(initial.freqDays||'60'));
+      const canSave=name&&nextDue;
+      return (
+        <div>
+          <IField label="Name" value={name} onChange={setName} />
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10 }}>
+            <SField label="Category" value={cat} onChange={setCat} options={CAT_OPTS} />
+            <SField label="Frequency" value={freq} onChange={setFreq} options={FREQ_OPTS} />
+          </div>
+          {freq==='custom'&&<IField label="Cycle length (days)" value={freqDays} onChange={setFreqDays} type="number" placeholder="60" />}
+          <IField label={freq==='oneoff'?'Payment date':'First / reference payment date'} value={nextDue} onChange={setNextDue} type="date" />
+          <div style={{ display:'flex',gap:10 }}>
+            <GBtn onClick={onCancel} style={{ flex:1,textAlign:'center',padding:'13px' }}>Cancel</GBtn>
+            <PBtn onClick={()=>canSave&&onSave({name,cat,freq,nextDue,freqDays:+freqDays||60})} disabled={!canSave} style={{ flex:2 }}>Save</PBtn>
+          </div>
+        </div>
+      );
+    };
+
+    /* Inline amount update form */
+    const UpdateAmountForm = ({ onSave, onCancel }) => {
+      const [amount,setAmount]=useState('');
+      const [from,setFrom]=useState(getMon());
+      return (
+        <div style={{ background:C.s2,borderRadius:14,padding:14,marginTop:10 }}>
+          <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,fontWeight:700,color:C.text,marginBottom:12 }}>Update amount</div>
+          <IField label="New amount (£)" value={amount} onChange={setAmount} type="number" placeholder="0.00" />
+          <IField label="Effective from (week commencing)" value={from} onChange={setFrom} type="date"
+            hint="New amount applies from this week onwards. Past weeks keep the old amount." />
+          <div style={{ display:'flex',gap:8 }}>
+            <GBtn onClick={onCancel} style={{ flex:1,textAlign:'center',padding:'10px' }}>Cancel</GBtn>
+            <PBtn onClick={()=>amount&&onSave({amount:+amount,from})} disabled={!amount} color={C.green} style={{ flex:2,padding:'11px',fontSize:13 }}>Apply</PBtn>
           </div>
         </div>
       );
@@ -817,14 +892,27 @@
 
     const RegisterScreen = ({ comms, saveComms, today }) => {
       const [adding,setAdding]=useState(false);
-      const [editing,setEditing]=useState(null);
+      const [editing,setEditing]=useState(null);     // id being detail-edited
+      const [updating,setUpdating]=useState(null);   // id being amount-updated
       const freqLabel=c=>c.freq==='custom'?`Every ${c.freqDays||60} days`:FREQ_OPTS.find(f=>f.v===c.freq)?.l||c.freq;
+
+      const addAmount=(id,entry)=>{
+        saveComms(comms.map(c=>{
+          if(c.id!==id) return c;
+          const mc=migrateComm(c);
+          // Remove any existing entry with same from date, add new one, sort
+          const amounts=[...mc.amounts.filter(a=>a.from!==entry.from),entry].sort((a,b)=>a.from.localeCompare(b.from));
+          return {...mc,amounts};
+        }));
+        setUpdating(null);
+      };
+
       return (
         <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
           {adding?(
             <Card>
               <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:16,color:C.text,marginBottom:16 }}>New commitment</div>
-              <CommForm onSave={d=>{saveComms([...comms,{id:Date.now(),...d}]);setAdding(false);}} onCancel={()=>setAdding(false)} />
+              <AddCommForm onSave={d=>{saveComms([...comms,{id:Date.now(),...d}]);setAdding(false);}} onCancel={()=>setAdding(false)} />
             </Card>
           ):<PBtn onClick={()=>setAdding(true)}>+ Add commitment</PBtn>}
 
@@ -832,33 +920,70 @@
             <Card style={{ textAlign:'center',padding:'30px 20px' }}>
               <div style={{ fontSize:28,marginBottom:10 }}>📋</div>
               <div style={{ fontFamily:'Outfit,sans-serif',color:C.muted }}>No commitments yet</div>
-              <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.dim,marginTop:5 }}>Add your bills and subscriptions</div>
+              <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,color:C.dim,marginTop:5 }}>Add your bills and subscriptions — set the first payment date and the app will calculate every week automatically</div>
             </Card>
           ):comms.map(c=>{
+            const mc=migrateComm(c);
+            const curAmt=currentAmount(mc);
+            const freqTxt=freqLabel(mc);
+            const earliestFrom=mc.amounts.length?mc.amounts[0].from:'';
+
             if(editing===c.id) return (
               <Card key={c.id} style={{ border:`1px solid ${C.blue}40` }}>
-                <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:15,color:C.text,marginBottom:12 }}>Edit · {c.name}</div>
-                <Notice color={C.blue}>Changes only affect the forecast and future weeks. Past weeks you've entered won't change.</Notice>
-                <CommForm initial={c} saveLabel="Save changes"
-                  onSave={d=>{saveComms(comms.map(x=>x.id===c.id?{...x,...d}:x));setEditing(null);}}
+                <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:15,color:C.text,marginBottom:12 }}>Edit details · {mc.name}</div>
+                <EditCommForm initial={mc}
+                  onSave={d=>{saveComms(comms.map(x=>x.id===c.id?{...migrateComm(x),...d}:x));setEditing(null);}}
                   onCancel={()=>setEditing(null)} />
               </Card>
             );
+
             return (
-              <div key={c.id} style={{ background:C.s1,border:`1px solid ${C.border}`,borderRadius:16,padding:'14px 16px',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
-                <div style={{ flex:1,minWidth:0 }}>
-                  <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:14,color:C.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{c.name}</div>
-                  <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,marginTop:3 }}>
-                    {freqLabel(c)}{c.nextDue?` · next ${shortLbl(c.nextDue)}`:''}
-                    {c.effectiveFrom&&c.effectiveFrom>START?` · from ${shortLbl(c.effectiveFrom)}`:''}
+              <Card key={c.id} style={{ padding:0,overflow:'hidden' }}>
+                {/* Main row */}
+                <div style={{ padding:'14px 16px',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                  <div style={{ flex:1,minWidth:0 }}>
+                    <div style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:14,color:C.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{mc.name}</div>
+                    <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.muted,marginTop:3 }}>
+                      {freqTxt}
+                      {earliestFrom?` · from ${shortLbl(earliestFrom)}`:''}
+                      {mc.nextDue?` · ref ${shortLbl(mc.nextDue)}`:''}
+                    </div>
+                  </div>
+                  <div style={{ display:'flex',alignItems:'center',gap:8,flexShrink:0 }}>
+                    <span style={{ fontFamily:'DM Mono,monospace',fontSize:16,color:C.blue,fontWeight:500 }}>{fmt(curAmt)}</span>
+                    <button onClick={()=>{setUpdating(updating===c.id?null:c.id);setEditing(null);}}
+                      style={{ color:C.green,fontSize:12,cursor:'pointer',padding:'5px 8px',borderRadius:8,background:C.greenBg,border:`1px solid ${C.green}30`,fontFamily:'Outfit,sans-serif',fontWeight:600 }}>
+                      {updating===c.id?'Cancel':'Update £'}
+                    </button>
+                    <button onClick={()=>{setEditing(editing===c.id?null:c.id);setUpdating(null);}}
+                      style={{ color:C.muted,fontSize:12,cursor:'pointer',padding:'5px 8px',borderRadius:8,background:C.s2,border:`1px solid ${C.border}`,fontFamily:'Outfit,sans-serif',fontWeight:600 }}>
+                      {editing===c.id?'Cancel':'Edit'}
+                    </button>
+                    <button onClick={()=>saveComms(comms.filter(x=>x.id!==c.id))}
+                      style={{ color:C.dim,fontSize:13,cursor:'pointer',padding:'5px 7px',borderRadius:8,background:C.s2,border:`1px solid ${C.border}` }}>✕</button>
                   </div>
                 </div>
-                <div style={{ display:'flex',alignItems:'center',gap:8,flexShrink:0 }}>
-                  <span style={{ fontFamily:'DM Mono,monospace',fontSize:15,color:C.blue,fontWeight:500 }}>{fmt(c.amount)}</span>
-                  <button onClick={()=>setEditing(c.id)} style={{ color:C.muted,fontSize:12,cursor:'pointer',padding:'5px 8px',borderRadius:8,background:C.s2,border:`1px solid ${C.border}`,fontFamily:'Outfit,sans-serif',fontWeight:600 }}>Edit</button>
-                  <button onClick={()=>saveComms(comms.filter(x=>x.id!==c.id))} style={{ color:C.dim,fontSize:13,cursor:'pointer',padding:'5px 7px',borderRadius:8,background:C.s2,border:`1px solid ${C.border}` }}>✕</button>
-                </div>
-              </div>
+
+                {/* Amount history */}
+                {mc.amounts.length>1&&(
+                  <div style={{ borderTop:`1px solid ${C.border}`,padding:'10px 16px',background:C.s2 }}>
+                    <div style={{ fontFamily:'Outfit,sans-serif',fontSize:11,fontWeight:700,color:C.muted,letterSpacing:1.2,textTransform:'uppercase',marginBottom:8 }}>Amount history</div>
+                    {[...mc.amounts].sort((a,b)=>b.from.localeCompare(a.from)).map((a,i)=>(
+                      <div key={i} style={{ display:'flex',justifyContent:'space-between',marginBottom:4 }}>
+                        <span style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:i===0?C.text:C.muted }}>{shortLbl(a.from)}{i===0?' (current)':''}</span>
+                        <span style={{ fontFamily:'DM Mono,monospace',fontSize:12,color:i===0?C.blue:C.muted }}>{fmt(a.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Update amount inline form */}
+                {updating===c.id&&(
+                  <div style={{ borderTop:`1px solid ${C.border}`,padding:'14px 16px' }}>
+                    <UpdateAmountForm onSave={entry=>addAmount(c.id,entry)} onCancel={()=>setUpdating(null)} />
+                  </div>
+                )}
+              </Card>
             );
           })}
         </div>
