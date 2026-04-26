@@ -643,8 +643,12 @@
     };
 
     /* ══════════════════════════════════════════════ HISTORY ══ */
-    const HistoryScreen = ({ weeks, comms, txs, saveWeek, onNav, setAddWk }) => {
+    const TX_COLORS = { adhoc: C.green, oneoff: C.amber, exp: C.lavender };
+    const TX_LABELS = { adhoc: 'Ad Hoc', oneoff: 'One-Off', exp: 'Expense' };
+
+    const HistoryScreen = ({ weeks, comms, txs, saveWeek, delTx, onNav, setAddWk }) => {
       const [editWk, setEditWk] = useState(null);
+      const [expandedWk, setExpandedWk] = useState(null);
       const now = getMon();
       const allKeys = wkRange(START, now).reverse();
       const avgs = getAvgs(weeks, txs, comms);
@@ -672,36 +676,63 @@
           </Card>
 
           <Notice color={C.blue} style={{ marginBottom:0 }}>
-            To add individual transactions to a past week, use <strong>+ Add</strong> on the Week screen and select the week from the dropdown.
+            To add transactions to a past week, use <strong>+ Add</strong> on the Week screen and select the week from the dropdown.
           </Notice>
 
           {allKeys.map(wk=>{
             const wd=weeks[wk]; const isCurrent=wk===now;
             const stats=wd?wkStats(wk,wd,comms,txs):null;
             const hasIncome=wd&&+(wd.income||0)>0;
+            const wkTxs=txs.filter(t=>t.wk===wk);
+            const isExpanded=expandedWk===wk;
+
             return (
-              <div key={wk} style={{ background:C.s1,border:`1px solid ${isCurrent?C.pink+'45':C.border}`,borderRadius:16,padding:'14px 16px',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
-                <div style={{ flex:1,minWidth:0 }}>
-                  <div style={{ display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4 }}>
-                    <span style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:14,color:C.text }}>{shortLbl(wk)}</span>
-                    {isCurrent&&<Tag>Current</Tag>}
-                    {wd?.holiday&&<Tag color={C.amber}>Holiday</Tag>}
-                  </div>
-                  {stats?(
-                    <div style={{ fontFamily:'DM Mono,monospace',fontSize:12,color:C.muted }}>
-                      ↑{fmt(stats.income)} · ↓{fmt(stats.real)}{stats.expS>0?` · ↩${fmt(stats.expS)}`:''}
-                      {stats.txs.length>0&&<span style={{ color:C.dim }}> · {stats.txs.length} tx</span>}
+              <div key={wk} style={{ background:C.s1,border:`1px solid ${isCurrent?C.pink+'45':C.border}`,borderRadius:16,overflow:'hidden' }}>
+                {/* Main row */}
+                <div style={{ padding:'14px 16px',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+                  <div style={{ flex:1,minWidth:0 }}>
+                    <div style={{ display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4 }}>
+                      <span style={{ fontFamily:'Outfit,sans-serif',fontWeight:700,fontSize:14,color:C.text }}>{shortLbl(wk)}</span>
+                      {isCurrent&&<Tag>Current</Tag>}
+                      {wd?.holiday&&<Tag color={C.amber}>Holiday</Tag>}
                     </div>
-                  ):(
-                    <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.dim }}>No income entered yet</div>
-                  )}
+                    {stats?(
+                      <div style={{ fontFamily:'DM Mono,monospace',fontSize:12,color:C.muted }}>
+                        ↑{fmt(stats.income)} · ↓{fmt(stats.real)}{stats.expS>0?` · ↩${fmt(stats.expS)}`:''}
+                        {wkTxs.length>0&&(
+                          <button onClick={()=>setExpandedWk(isExpanded?null:wk)}
+                            style={{ marginLeft:8,fontFamily:'Outfit,sans-serif',fontSize:11,fontWeight:700,color:isExpanded?C.pink:C.muted,background:'none',cursor:'pointer' }}>
+                            {wkTxs.length} tx {isExpanded?'▲':'▼'}
+                          </button>
+                        )}
+                      </div>
+                    ):(
+                      <div style={{ fontFamily:'Outfit,sans-serif',fontSize:12,color:C.dim }}>No income entered yet</div>
+                    )}
+                  </div>
+                  <div style={{ display:'flex',alignItems:'center',gap:8,marginLeft:12,flexShrink:0 }}>
+                    {stats&&<div style={{ fontFamily:'DM Mono,monospace',fontSize:18,color:stats.saved>=0?C.green:C.red,fontWeight:500 }}>{fmt(stats.saved)}</div>}
+                    <button onClick={()=>setEditWk(wk)} style={{ fontFamily:'Outfit,sans-serif',fontSize:12,fontWeight:700,color:hasIncome?C.muted:C.pink,background:hasIncome?C.s2:C.pinkBg,borderRadius:10,padding:'7px 12px',cursor:'pointer',border:`1px solid ${hasIncome?C.border:C.pink+'30'}` }}>
+                      {hasIncome?'Edit':'Set income'}
+                    </button>
+                  </div>
                 </div>
-                <div style={{ display:'flex',alignItems:'center',gap:8,marginLeft:12,flexShrink:0 }}>
-                  {stats&&<div style={{ fontFamily:'DM Mono,monospace',fontSize:18,color:stats.saved>=0?C.green:C.red,fontWeight:500 }}>{fmt(stats.saved)}</div>}
-                  <button onClick={()=>setEditWk(wk)} style={{ fontFamily:'Outfit,sans-serif',fontSize:12,fontWeight:700,color:hasIncome?C.muted:C.pink,background:hasIncome?C.s2:C.pinkBg,borderRadius:10,padding:'7px 12px',cursor:'pointer',border:`1px solid ${hasIncome?C.border:C.pink+'30'}` }}>
-                    {hasIncome?'Edit':'Set income'}
-                  </button>
-                </div>
+
+                {/* Expanded transactions */}
+                {isExpanded&&wkTxs.length>0&&(
+                  <div style={{ borderTop:`1px solid ${C.border}` }}>
+                    {wkTxs.map((tx,i)=>(
+                      <div key={tx.id} style={{ display:'flex',alignItems:'center',gap:12,padding:'11px 16px',borderBottom:i<wkTxs.length-1?`1px solid ${C.border}`:'none',background:C.s2 }}>
+                        <div style={{ flex:1,minWidth:0 }}>
+                          <div style={{ fontFamily:'Outfit,sans-serif',fontSize:13,fontWeight:600,color:C.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{tx.name}</div>
+                          <div style={{ fontFamily:'Outfit,sans-serif',fontSize:11,color:TX_COLORS[tx.type]||C.muted,marginTop:1 }}>{TX_LABELS[tx.type]||tx.type}</div>
+                        </div>
+                        <span style={{ fontFamily:'DM Mono,monospace',fontSize:14,color:TX_COLORS[tx.type]||C.muted,fontWeight:500,flexShrink:0 }}>{fmt(tx.amount)}</span>
+                        <button onClick={()=>delTx(tx.id)} style={{ color:C.dim,fontSize:13,cursor:'pointer',padding:'4px 6px',borderRadius:6,background:C.s1,border:`1px solid ${C.border}`,flexShrink:0 }}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
